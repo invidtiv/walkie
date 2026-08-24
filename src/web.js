@@ -76,7 +76,7 @@ class WebClient {
     const resp = await request(cmd)
 
     if (!resp.ok) {
-      this.send({ type: 'error', error: resp.error })
+      this.send({ type: 'error', error: resp.error, channel })
       return
     }
 
@@ -218,6 +218,9 @@ class WebClient {
           this.send({ type: 'messages', channel, messages: resp.messages })
         }
       } catch (e) {
+        if (abort.socket) { try { abort.socket.destroy() } catch {} }
+        abort.socket = null
+
         if (abort.aborted) break
 
         // Wait and retry on error (daemon may have restarted)
@@ -282,7 +285,7 @@ async function startWebServer({ port = 3000 } = {}) {
     } else if (req.method === 'GET' && pathname === '/state') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(readState())
-    } else if (req.method === 'PUT' && pathname === '/state') {
+    } else if ((req.method === 'PUT' || req.method === 'POST') && pathname === '/state') {
       let body = ''
       req.on('data', chunk => { body += chunk })
       req.on('end', () => {

@@ -633,15 +633,32 @@ module.exports = `<!DOCTYPE html>
           sidebar();
           return;
         }
+        if (m.type === 'error') {
+          if (m.channel && ch.has(m.channel)) {
+            ch.get(m.channel).joining = false;
+            sidebar(); renderChat();
+          }
+          return;
+        }
         if (m.type === 'messages' && ch.has(m.channel)) {
           const c = ch.get(m.channel);
+          const knownIds = new Set(c.msgs.map(m => m.id).filter(Boolean));
           for (const x of m.messages) {
+            // Dedup by message ID
+            if (x.id && knownIds.has(x.id)) continue;
             const isSys = x.from === 'system' || x.from === 'daemon';
             // Skip own join/leave notifications
             if (isSys && clientId && (x.data === clientId + ' joined' || x.data === clientId + ' left')) continue;
-            c.msgs.push({ ts: fmtTime(x.ts), who: isSys ? '' : x.from, text: x.data, own: false, sys: isSys });
-            if (!isSys) notify(x.from, x.data, m.channel);
-            if (m.channel !== active) {
+            const isOwn = !isSys && x.from === clientId;
+            // If own message, try to match an optimistic entry instead of duplicating
+            if (isOwn) {
+              const match = c.msgs.find(m => m.own && !m.id && m.text === x.data);
+              if (match) { match.id = x.id; continue; }
+            }
+            c.msgs.push({ ts: fmtTime(x.ts), who: isSys ? '' : x.from, text: x.data, own: isOwn, sys: isSys, id: x.id || null });
+            if (x.id) knownIds.add(x.id);
+            if (!isSys && !isOwn) notify(x.from, x.data, m.channel);
+            if (m.channel !== active && !isOwn) {
               c.unread++;
               if (isMentioned(x.data)) c.pinged = true;
             }
@@ -649,6 +666,7 @@ module.exports = `<!DOCTYPE html>
           if (m.channel === active) renderMsgs();
           else save();
           sidebar();
+          tx({ type: 'members', channel: m.channel });
           return;
         }
         if (m.type === 'left') {
@@ -885,6 +903,12 @@ module.exports = `<!DOCTYPE html>
       for (const m of c.msgs) {
         if (!m.sys && m.who && m.who !== clientId && m.who !== 'system' && m.who !== 'daemon') seen.add(m.who);
       }
+      const mem = members.get(active);
+      if (mem && mem.members) {
+        for (const name of mem.members) {
+          if (name && name !== clientId) seen.add(name);
+        }
+      }
       return [...seen].sort();
     }
 
@@ -951,10 +975,21 @@ module.exports = `<!DOCTYPE html>
       if (e.key === 'Enter' && !document.getElementById('welcomeModal').classList.contains('hidden')) setWelcomeName();
     });
 
-    // Refresh members every 10s
+    // Refresh members every 5s
     setInterval(() => {
       if (active && ch.has(active)) tx({ type: 'members', channel: active });
-    }, 10000);
+    }, 5000);
+
+    // Flush state on page close/refresh so messages aren't lost by the 500ms debounce
+    window.addEventListener('beforeunload', () => {
+      clearTimeout(saveTimer);
+      const data = {};
+      for (const [n, c] of ch) {
+        data[n] = { secret: c.secret, msgs: c.msgs.slice(-MAX_MSGS) };
+      }
+      const state = { channels: data, active: active || null, name: storedName || null };
+      navigator.sendBeacon('/state', new Blob([JSON.stringify(state)], { type: 'application/json' }));
+    });
 
     window.addEventListener('focus', clearTitleBadge);
 
