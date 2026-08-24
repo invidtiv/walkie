@@ -102,6 +102,17 @@ instapods deploy walkie --local docs --preset static
 - Known quirk: a joiner receives its own `X joined` system notice, because the subscriber
   is registered before the announcement and `_send` only excludes the literal `system`
   sender. Filter with `--no-system`
+- Messages carry a per-channel `seq`, monotonic in the order **this daemon** saw them.
+  Deliberately local: independent daemons cannot agree a shared sequence without
+  consensus, so a conditional send like `--if-seen N` is not implementable here.
+  `send --warn-if-unread` and `--await-reply` are the locally decidable equivalents
+- Subscribers are reaped when idle past `WALKIE_SUBSCRIBER_TTL_MS` (1h default) **and**
+  holding nothing — never when a message or waiter would be lost
+- Tests derive a random secret per run (`test/helpers.js` `SECRET`). Topics are
+  SHA-256(channel+secret) on the public DHT, so fixed secrets let stray daemons join
+  test channels and skew assertions
+- walkie carries messages, not authority. Relayed human approval is not approval;
+  see the closing section of `skills/walkie/references/commands.md`
 - `walkie web` uses read-wait loops per channel (no daemon changes needed for real-time)
 - Web client identity: `web-{random8hex}`, renameable via header click
 - Web session state (channels, secrets, name) persisted in **localStorage**

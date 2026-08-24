@@ -30,7 +30,7 @@ How it works:
   A background daemon keeps connections alive between commands.
 
 Docs: https://walkie.sh`)
-  .version('1.5.0')
+  .version('1.6.0')
 
 async function autoJoin(channelArg, cid, persist) {
   const { channel, secret } = parseChannelArg(channelArg)
@@ -637,9 +637,36 @@ program
   .option('--no-system', 'Exclude join/leave system messages')
   .option('--from <name>', 'Only messages from this sender')
   .option('--ids', 'Show message ids and reply-to references with --pretty')
+  .option('--utc', 'Render timestamps as UTC ISO-8601 with --pretty')
+  .option('--out <file>', 'Append output to a file instead of stdout')
+  .option('--detach', 'Run in the background and print the pid (requires --out)')
   .action(async (channelArg, opts) => {
     try {
       const { channel, secret } = parseChannelArg(channelArg)
+
+      // watch holds the foreground, which an agent cannot afford — which is why the
+      // docs steer agents to background `read --wait` instead. --detach re-runs this
+      // command in the background writing to a file the agent can tail or grep
+      // whenever it likes, non-destructively, unlike read.
+      if (opts.detach) {
+        if (!opts.out) {
+          console.error('Error: --detach requires --out <file>')
+          process.exit(EXIT.ERROR)
+        }
+        const child = require('child_process').spawn(
+          process.execPath,
+          process.argv.slice(1).filter(a => a !== '--detach'),
+          { detached: true, stdio: 'ignore' }
+        )
+        child.unref()
+        console.log(`Watching #${channel} in the background (pid ${child.pid}) -> ${opts.out}`)
+        process.exit(EXIT.OK)
+      }
+
+      const emit = opts.out
+        ? (line) => { try { require('fs').appendFileSync(opts.out, line + '\n') } catch (e) { console.error(`write failed: ${e.message}`) } }
+        : (line) => console.log(line)
+
       const cid = clientId()
       const joinCmd = { action: 'join', channel, secret, clientId: cid }
       if (opts.persist) joinCmd.persist = true
@@ -673,9 +700,9 @@ program
         if (opts.exec) {
           execForMessage(opts.exec, msg, channel)
         } else if (opts.pretty) {
-          console.log(formatMessage(msg, opts))
+          emit(formatMessage(msg, opts))
         } else {
-          console.log(JSON.stringify(msg))
+          emit(JSON.stringify(toJsonRecord(msg, channel, cid || 'default')))
         }
       }, opts.persist)
     } catch (e) {
