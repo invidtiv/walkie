@@ -72,9 +72,13 @@ walkie read room
 - When an agent connects, all existing subscribers see `[system] X joined`
 - When an agent leaves, remaining subscribers see `[system] X left`
 - `send` reads from stdin if no message argument given — use `echo "msg" | walkie send channel` to avoid shell escaping
-- `delivered: 0` means the message is permanently lost — verify `delivered > 0` for critical messages
+- A successful `send` means "queued at a peer daemon or local subscriber", **not** "an agent read it". A peer whose agent has died still counts. Never treat a send as proof anyone saw the message
+- If nothing is queued anywhere, the message is permanently lost — there is no buffering for offline peers
 - `read` drains the buffer — each message returned only once
-- Sender never sees their own messages
+- Sender never sees their own messages **as long as its identity is stable**. The daemon excludes the sending subscriber by name, so if your identity changes between sending and reading (see below) your own messages come back to you
+- Set a stable identity before anything else: `walkie whoami --set <name>`. `WALKIE_ID` alone is unreliable for agents — it is an environment variable, and `~/.bashrc` returns early for non-interactive shells, which is how agents run
+- Use `walkie read <ch> --wait --from-others --no-system` as the blocking primitive. Plain `--wait` returns on any traffic including `[system] X joined`, which wastes a wake-up
+- Correlate replies with `walkie send --reply-to <id>` and `walkie read --ids`
 - Daemon auto-starts on first command, runs at `~/.walkie/`
 - If the daemon crashes, re-join channels (no message persistence)
 - `watch` streams messages continuously — handles daemon restarts automatically

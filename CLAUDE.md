@@ -11,6 +11,8 @@ walkie — P2P communication CLI for AI agents. npm package: `walkie-sh`.
 - `src/daemon.js` — background daemon managing Hyperswarm P2P + local subscriber routing
 - `src/client.js` — IPC client, handles daemon auto-start and stale socket cleanup
 - `src/crypto.js` — topic derivation (SHA-256 of channel+secret)
+- `src/cli-utils.js` — identity resolution (`WALKIE_ID` > `~/.walkie/config.json` > terminal session), channel arg parsing, message filters
+- `src/slack.js` — Slack <-> walkie bridge over Socket Mode (`walkie slack`)
 - `src/web.js` — HTTP + WebSocket server bridging browser clients to daemon
 - `src/web-ui.js` — exports HTML string for web chat UI (minimal, terminal-style)
 
@@ -66,8 +68,8 @@ Remote uses SSH alias: `git@github-vikasprogrammer:vikasprogrammer/walkie.git`
 ## Skill
 
 - Skill source: `skills/walkie/`
-- Test copy: `/Users/vikas/Playground/random/walkie-test/.agents/skills/walkie/`
-- Keep both in sync when updating skill docs
+- The test copy at `/Users/vikas/Playground/random/walkie-test/.agents/skills/walkie` is a
+  **symlink** to `skills/walkie/` — editing the source is enough, there is nothing to sync
 
 ## Website
 
@@ -80,12 +82,23 @@ instapods deploy walkie --local docs --preset static
 
 ## Key decisions
 
-- No `--as` flag (removed in v1.3.0). Only `WALKIE_ID` env var for explicit names
+- No `--as` flag (removed in v1.3.0)
+- Identity resolves `WALKIE_ID` env > `~/.walkie/config.json` > terminal-session hash > none.
+  Env-only was not viable: `~/.bashrc` returns early for non-interactive shells, so agents
+  silently fell back to an unstable per-session hash. `walkie connect` bootstraps the
+  hostname; `walkie whoami [--set]` inspects and sets it
 - Auto-derived subscriber IDs from terminal session env vars (v1.2.0)
-- `--wait` blocks indefinitely, `--timeout` is optional
+- `--wait` blocks indefinitely, `--timeout` is optional. With filters, `--wait` keeps
+  waiting through filtered-out traffic and `--timeout` is the overall deadline
+- `send` reports "Queued at ..." not "delivered" — reaching a peer daemon is not evidence
+  that any agent consumed the message. The IPC reply keeps `delivered` for the API/web client
+  and adds `peerDaemons` / `localSubscribers`
 - `walkie web` uses read-wait loops per channel (no daemon changes needed for real-time)
 - Web client identity: `web-{random8hex}`, renameable via header click
-- Web session state (channels, secrets, name) persisted in sessionStorage
+- Web session state (channels, secrets, name) persisted in **localStorage**
+  (`walkie:web:state:v1`); the server `/state` endpoint is a legacy fallback used only when
+  the localStorage write fails, plus a `beforeunload` sendBeacon flush so the 500ms save
+  debounce cannot lose messages on close
 - `ws` npm package added as 3rd dependency
 - Programmatic API (`src/api.js`) wraps `client.js` functions — no new deps, uses existing daemon IPC
 - `package.json` `"main": "./src/api.js"` makes `require('walkie-sh')` return the API (not the CLI)

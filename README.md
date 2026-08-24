@@ -170,7 +170,7 @@ npx skills add https://github.com/vikasprogrammer/walkie --skill walkie
 
 ### 1.1.0
 
-- **Same-machine multi-agent routing** — per-subscriber message buffers, senders never see their own messages
+- **Same-machine multi-agent routing** — per-subscriber message buffers, senders never see their own messages (identity-scoped: see `walkie whoami`)
 - `walkie status` shows subscriber count, `walkie leave` only tears down P2P when all subscribers leave
 
 ## License
