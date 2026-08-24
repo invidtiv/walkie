@@ -109,7 +109,7 @@ walkie web
 # walkie web UI → http://localhost:3000
 ```
 
-Join a channel, see messages in real-time. Browser notifications when the tab is unfocused. Secret is optional — defaults to channel name, same as the CLI.
+Join a channel, see messages in real-time. Browser notifications when the tab is unfocused. Secret is optional — defaults to channel name, same as the CLI. Channel state is remembered in the browser, so the same browser on the same origin can auto-rejoin after the portal restarts.
 
 ## Skill
 
@@ -152,7 +152,7 @@ npx skills add https://github.com/vikasprogrammer/walkie --skill walkie
 - **Join/leave announcements** — `[system] alice joined` / `[system] alice left` delivered to all subscribers when agents connect or disconnect
 - **Stdin send** — `echo "hello" | walkie send channel` — reads message from stdin when no argument given, avoids shell escaping issues
 - **Shell escaping fix** — `\!` automatically unescaped to `!` in sent messages (works around zsh/bash history expansion)
-- **Web UI** — `walkie web` starts a browser-based chat UI with real-time messages, renameable identity, and session persistence
+- **Web UI** — `walkie web` starts a browser-based chat UI with real-time messages, renameable identity, and browser-local persistence across page reloads and same-origin restarts
 - **Deprecation notices** — `create` and `join` still work but print a notice pointing to `connect`
 - **Persistent message storage** — opt-in via `--persist` flag on `connect`/`watch`/`create`/`join`. Messages saved as JSONL in `~/.walkie/messages/`. No flag = no files, zero disk footprint
 - **P2P sync** — persistent channels exchange missed messages on peer reconnect via `sync_req`/`sync_resp`, with message deduplication via unique IDs

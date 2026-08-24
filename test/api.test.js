@@ -30,7 +30,9 @@ describe('api.listen()', () => {
     await request({ action: 'join', channel: 'test-api', secret: 'secret', clientId: 'sender' })
 
     const received = new Promise((resolve) => {
-      ch.on('message', (msg) => resolve(msg))
+      ch.on('message', (msg) => {
+        if (msg.from !== 'system') resolve(msg)
+      })
     })
 
     await request({ action: 'send', channel: 'test-api', message: 'ping', clientId: 'sender' })
@@ -59,8 +61,9 @@ describe('api.listen()', () => {
     // Verify reader got it
     const resp = await request({ action: 'read', channel: 'test-send', clientId: 'reader' })
     assert.equal(resp.ok, true)
-    assert.equal(resp.messages.length, 1)
-    assert.equal(resp.messages[0].data, 'hello from API')
+    const userMsgs = resp.messages.filter(msg => msg.from !== 'system')
+    assert.equal(userMsgs.length, 1)
+    assert.equal(userMsgs[0].data, 'hello from API')
 
     await ch.close()
   })
@@ -84,8 +87,9 @@ describe('api.listen()', () => {
     // Give the stream loop time to deliver
     await new Promise(r => setTimeout(r, 500))
 
-    assert.equal(messages.length, 1)
-    assert.equal(messages[0].data, 'from-other')
+    const userMsgs = messages.filter(msg => msg.from !== 'system')
+    assert.equal(userMsgs.length, 1)
+    assert.equal(userMsgs[0].data, 'from-other')
 
     await ch.close()
   })
@@ -104,6 +108,7 @@ describe('api.send()', () => {
 
     // Verify receiver got it
     const resp = await request({ action: 'read', channel: 'test-oneshot', clientId: 'receiver' })
-    assert.equal(resp.messages[0].data, 'fire-and-forget')
+    const userMsgs = resp.messages.filter(msg => msg.from !== 'system')
+    assert.equal(userMsgs[0].data, 'fire-and-forget')
   })
 })

@@ -95,6 +95,8 @@ describe('HTTP', () => {
     assert.equal(r.status, 200)
     assert.ok(r.headers['content-type'].includes('text/html'))
     assert.ok(r.body.includes('<'))
+    assert.ok(r.body.includes("const STORAGE_KEY = 'walkie:web:state:v1';"))
+    assert.ok(r.body.includes("fetch('/state')"))
   })
 
   it('GET /unknown returns 404', async () => {

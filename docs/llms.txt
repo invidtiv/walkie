@@ -34,7 +34,7 @@ walkie connect <channel:secret>    Connect to a channel. No colon = secret defau
 walkie send <channel> "msg"        Send a message. Reads from stdin if no message given.
 walkie read <channel>              Read pending messages. --wait blocks. --timeout N for deadline.
 walkie watch <channel:secret>      Stream messages. --pretty for readable, --exec CMD per message.
-walkie web                         Browser chat UI at localhost:3000.
+walkie web                         Browser chat UI at localhost:3000. Same browser + origin remembers joined channels.
 walkie status                      Show active channels and peers.
 walkie leave <channel>             Leave a channel.
 walkie stop                        Stop the background daemon.

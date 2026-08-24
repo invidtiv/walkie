@@ -549,16 +549,76 @@ module.exports = `<!DOCTYPE html>
     }
 
     const MAX_MSGS = 200;
+    const STORAGE_KEY = 'walkie:web:state:v1';
     let saveTimer = null;
 
-    function save() {
+    function snapshotState() {
       const data = {};
       for (const [n, c] of ch) {
         data[n] = { secret: c.secret, msgs: c.msgs.slice(-MAX_MSGS) };
       }
-      const state = { channels: data, active: active || null, name: storedName || null };
+      return { channels: data, active: active || null, name: storedName || null };
+    }
+
+    function normalizeState(state) {
+      if (!state || typeof state !== 'object') return null;
+      const channels = {};
+      if (state.channels && typeof state.channels === 'object') {
+        for (const [n, v] of Object.entries(state.channels)) {
+          if (typeof n !== 'string' || !n) continue;
+          if (typeof v === 'string') {
+            if (v) channels[n] = { secret: v, msgs: [] };
+            continue;
+          }
+          if (!v || typeof v !== 'object' || !v.secret) continue;
+          channels[n] = {
+            secret: v.secret,
+            msgs: Array.isArray(v.msgs) ? v.msgs.slice(-MAX_MSGS) : []
+          };
+        }
+      }
+      return {
+        channels,
+        active: typeof state.active === 'string' ? state.active : null,
+        name: typeof state.name === 'string' ? state.name : null
+      };
+    }
+
+    function applyState(state) {
+      const normalized = normalizeState(state);
+      if (!normalized) return false;
+      for (const [n, v] of Object.entries(normalized.channels)) {
+        ch.set(n, { secret: v.secret, msgs: v.msgs, unread: 0 });
+      }
+      storedName = normalized.name;
+      if (normalized.active && ch.has(normalized.active)) active = normalized.active;
+      return true;
+    }
+
+    function readLocalState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return null;
+        return normalizeState(JSON.parse(raw));
+      } catch {
+        return null;
+      }
+    }
+
+    function writeLocalState(state) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function save() {
+      const state = snapshotState();
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
+        if (writeLocalState(state)) return;
         fetch('/state', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -567,22 +627,28 @@ module.exports = `<!DOCTYPE html>
       }, 500);
     }
 
-    async function load() {
+    async function loadLegacyState() {
       try {
         const resp = await fetch('/state');
         const state = await resp.json();
-        if (state.channels) {
-          for (const [n, v] of Object.entries(state.channels)) {
-            if (typeof v === 'string') {
-              if (v) ch.set(n, { secret: v, msgs: [], unread: 0 });
-            } else if (v && v.secret) {
-              ch.set(n, { secret: v.secret, msgs: v.msgs || [], unread: 0 });
-            }
-          }
-        }
-        storedName = state.name || null;
-        if (state.active && ch.has(state.active)) active = state.active;
-      } catch {}
+        return normalizeState(state);
+      } catch {
+        return null;
+      }
+    }
+
+    async function load() {
+      const localState = readLocalState();
+      if (localState) {
+        applyState(localState);
+        return;
+      }
+
+      const legacyState = await loadLegacyState();
+      if (legacyState) {
+        applyState(legacyState);
+        writeLocalState(snapshotState());
+      }
     }
 
     function joinAll() {
