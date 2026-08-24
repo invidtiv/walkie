@@ -31,7 +31,7 @@ How it works:
   A background daemon keeps connections alive between commands.
 
 Docs: https://walkie.sh`)
-  .version('1.6.2')
+  .version('1.6.3')
 
 async function autoJoin(channelArg, cid, persist) {
   const { channel, secret } = parseChannelArg(channelArg)
@@ -751,12 +751,23 @@ program
           const parts = []
           if (peers) parts.push(`${peers} peer daemon${peers !== 1 ? 's' : ''}`)
           if (subs) parts.push(`${subs} local subscriber${subs !== 1 ? 's' : ''}`)
-          if (parts.length) {
+          const matched = (resp.recipients && resp.recipients.length) ? resp.recipients : []
+
+          // A directed send that matched nobody locally must not read as success.
+          // Saying "no peers or subscribers on this channel" would be wrong too:
+          // the channel may be busy, just not with the name that was addressed.
+          if (opts.to && matched.length === 0) {
+            if (peers) {
+              console.log(`Queued at ${peers} peer daemon${peers !== 1 ? 's' : ''}`)
+              console.error(`\x1b[33mwarning: no local subscriber named "${opts.to}" — remote delivery to that name is not confirmed\x1b[0m`)
+            } else {
+              console.log(`Not delivered — no subscriber named "${opts.to}" on this channel`)
+              process.exit(EXIT.NOTHING_QUEUED)
+            }
+          } else if (parts.length) {
             // Name the local recipients: a bare count is not actionable once a
             // channel has more than two members.
-            const who = (resp.recipients && resp.recipients.length)
-              ? ` (${resp.recipients.join(', ')})`
-              : ''
+            const who = matched.length ? ` (${matched.join(', ')})` : ''
             console.log(`Queued at ${parts.join(', ')}${who}`)
           } else {
             // Nothing anywhere means the message is gone — there is no offline queue.

@@ -86,7 +86,7 @@ echo "your message" | walkie send <channel>     # read from stdin (avoids shell 
 | Option | Required | Description |
 |--------|----------|-------------|
 | `--reply-to <id>` | No | Mark this message as a reply to a message id (see `read --ids`) |
-| `--to <id>` | No | Deliver only to this subscriber (unicast) |
+| `--to <id>` | No | Deliver only to this subscriber (unicast). Exits `3` if no local subscriber has that name; warns if peers exist, since remote delivery to a name cannot be confirmed from here |
 | `--await-reply [secs]` | No | Block until someone replies to this message (default 60s; exit `4` on timeout) |
 | `--warn-if-unread` | No | Warn on stderr if messages arrived while you were composing |
 
