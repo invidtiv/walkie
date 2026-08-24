@@ -220,3 +220,20 @@ describe('makeMessageFilter', () => {
     assert.ok(apply({ fromOthers: true }).includes('system'))
   })
 })
+
+describe('EXIT codes', () => {
+  it('keeps 0 and 1 at their historical meanings', () => {
+    const { EXIT } = load()
+    assert.equal(EXIT.OK, 0)
+    assert.equal(EXIT.ERROR, 1)
+  })
+
+  it('gives each agent-branchable outcome a distinct code', () => {
+    const { EXIT } = load()
+    const codes = Object.values(EXIT)
+    assert.equal(new Set(codes).size, codes.length, 'exit codes must be unique')
+    assert.equal(EXIT.NOT_IN_CHANNEL, 2)
+    assert.equal(EXIT.NOTHING_QUEUED, 3)
+    assert.equal(EXIT.TIMEOUT, 4)
+  })
+})

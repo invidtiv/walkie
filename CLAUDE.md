@@ -93,6 +93,15 @@ instapods deploy walkie --local docs --preset static
 - `send` reports "Queued at ..." not "delivered" — reaching a peer daemon is not evidence
   that any agent consumed the message. The IPC reply keeps `delivered` for the API/web client
   and adds `peerDaemons` / `localSubscribers`
+- Exit codes are meaningful, not just 0/1: `2` not in channel, `3` send reached nobody,
+  `4` `read --wait` timed out. Defined once in `src/cli-utils.js` as `EXIT`
+- A `--wait` wake carries one message; `read --drain` issues the follow-up read that
+  collects the rest of a burst
+- `status` reports `bufferedBy` per subscriber — aggregate `buffered` cannot answer
+  "do *I* have unread?" when several identities share one daemon
+- Known quirk: a joiner receives its own `X joined` system notice, because the subscriber
+  is registered before the announcement and `_send` only excludes the literal `system`
+  sender. Filter with `--no-system`
 - `walkie web` uses read-wait loops per channel (no daemon changes needed for real-time)
 - Web client identity: `web-{random8hex}`, renameable via header click
 - Web session state (channels, secrets, name) persisted in **localStorage**

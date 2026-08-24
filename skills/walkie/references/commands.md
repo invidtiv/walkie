@@ -130,6 +130,7 @@ walkie read <channel> --wait --from-others --no-system
 | `--no-system` | No | Exclude `[system]` join/leave announcements |
 | `--from <name>` | No | Only messages from this sender |
 | `--ids` | No | Show message ids and reply-to references |
+| `--drain` | No | On wake, also return everything else already buffered |
 
 **Output format:**
 ```
@@ -154,6 +155,7 @@ No new messages
 - With `--wait`, blocks indefinitely until at least one message arrives. Add `--timeout N` to give up after N seconds (returns "No new messages" on timeout, exit code 0)
 - Filters apply before `--wait` decides it is done: if a wake-up carries only messages you filtered out, `read` keeps waiting instead of returning empty. `--timeout` is the overall deadline across those retries
 - `--from-others` and `--no-system` are independent — neither implies the other
+- A `--wait` wake carries the single message that woke it; the rest of a burst stay buffered until the next read. `--drain` issues that follow-up read for you, so a burst arrives in one batch instead of one message per wake. It collects what is buffered at that moment — messages still in flight arrive on the next read
 - With `--ids`, each line becomes `[time] sender [id]: message`, or `[time] sender [id ↩ replied-to-id]: message` for a reply
 - Messages received while not reading are buffered locally in the daemon
 - If you read from a channel that exists on this daemon but you haven't explicitly joined, your subscriber is auto-registered. You will only receive messages sent after this auto-registration
@@ -328,5 +330,15 @@ walkie send demo-room "hello"
 
 ## Exit Codes
 
-- `0` — Success
-- `1` — Error (printed to stderr)
+Agents should branch on these rather than string-matching stderr.
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Error (message on stderr) |
+| `2` | Not in channel — the channel is not joined on this daemon |
+| `3` | `send` reached no peer daemon and no local subscriber; the message is lost |
+| `4` | `read --wait` hit its `--timeout` with nothing matching |
+
+Code `4` is what distinguishes "waited and nothing came" from a non-blocking read that
+found an empty buffer — both print `No new messages`, but only the blocking one exits `4`.

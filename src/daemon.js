@@ -172,8 +172,12 @@ class WalkieDaemon {
           const waiter = (msgs) => {
             if (timer) clearTimeout(timer)
             if (socket.writable) {
-              if (msgs.length > 0) sub.lastReadTs = msgs[msgs.length - 1].ts
-              reply({ ok: true, messages: msgs })
+              // A waiter is woken with a single message. Anything that landed in the
+              // buffer between the wake and this reply goes out in the same batch, so
+              // the caller is not left with messages only a second read would reveal.
+              const all = msgs.concat(sub.messages.splice(0))
+              if (all.length > 0) sub.lastReadTs = all[all.length - 1].ts
+              reply({ ok: true, messages: all })
             } else {
               // Socket gone (client interrupted) — put messages back
               sub.messages.unshift(...msgs)
@@ -208,9 +212,15 @@ class WalkieDaemon {
         case 'status': {
           const channels = {}
           for (const [name, ch] of this.channels) {
+            // Aggregate buffered cannot answer "do *I* have unread?" on a daemon with
+            // more than one identity, so report the per-subscriber breakdown too.
             let buffered = 0
-            for (const [, sub] of ch.subscribers) buffered += sub.messages.length
-            const info = { peers: ch.peers.size, subscribers: ch.subscribers.size, buffered }
+            const bufferedBy = {}
+            for (const [sid, sub] of ch.subscribers) {
+              buffered += sub.messages.length
+              bufferedBy[sid] = sub.messages.length
+            }
+            const info = { peers: ch.peers.size, subscribers: ch.subscribers.size, buffered, bufferedBy }
             if (ch.persist) {
               info.persist = true
               info.stored = store.read(name, 0).length

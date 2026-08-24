@@ -3,7 +3,7 @@
 const { program } = require('commander')
 const { request, streamMessages } = require('../src/client')
 const { clientId, chatName, parseChannelArg, resolveIdentity, setIdentity,
-  isStableIdentity, identityWarning, configPath, makeMessageFilter } = require('../src/cli-utils')
+  isStableIdentity, identityWarning, configPath, makeMessageFilter, EXIT } = require('../src/cli-utils')
 
 program
   .name('walkie')
@@ -690,13 +690,17 @@ program
           const parts = []
           if (peers) parts.push(`${peers} peer daemon${peers !== 1 ? 's' : ''}`)
           if (subs) parts.push(`${subs} local subscriber${subs !== 1 ? 's' : ''}`)
-          console.log(parts.length
-            ? `Queued at ${parts.join(', ')}`
-            : 'Queued — no peers or subscribers on this channel yet')
+          if (parts.length) {
+            console.log(`Queued at ${parts.join(', ')}`)
+          } else {
+            // Nothing anywhere means the message is gone — there is no offline queue.
+            console.log('Queued nowhere — no peers or subscribers on this channel')
+            process.exit(EXIT.NOTHING_QUEUED)
+          }
         }
       } else {
         console.error(`Error: ${resp.error}`)
-        process.exit(1)
+        process.exit(/^Not in channel/.test(resp.error || '') ? EXIT.NOT_IN_CHANNEL : EXIT.ERROR)
       }
     } catch (e) {
       console.error(`Error: ${e.message}`)
@@ -713,6 +717,7 @@ program
   .option('--no-system', 'Exclude join/leave system messages')
   .option('--from <name>', 'Only messages from this sender')
   .option('--ids', 'Show message ids and reply-to references')
+  .option('--drain', 'On wake, also return everything else already buffered')
   .action(async (channelArg, opts) => {
     try {
       const cid = clientId()
@@ -741,10 +746,22 @@ program
         const resp = await request(cmd, timeout)
         if (!resp.ok) {
           console.error(`Error: ${resp.error}`)
-          process.exit(1)
+          process.exit(/^Not in channel/.test(resp.error || '') ? EXIT.NOT_IN_CHANNEL : EXIT.ERROR)
         }
 
-        for (const msg of resp.messages.filter(keep)) {
+        let batch = resp.messages
+        if (opts.wait && opts.drain && batch.length > 0) {
+          // A --wait wake carries a single message. Pull whatever else is already
+          // buffered so the caller does not have to issue the follow-up read by
+          // hand — the dance where messages get missed.
+          for (let i = 0; i < 10; i++) {
+            const more = await request({ action: 'read', channel, clientId: cid }, 10000)
+            if (!more.ok || more.messages.length === 0) break
+            batch = batch.concat(more.messages)
+          }
+        }
+
+        for (const msg of batch.filter(keep)) {
           console.log(formatMessage(msg, opts))
           printed = true
         }
@@ -755,7 +772,11 @@ program
         if (deadline && Date.now() >= deadline) break
       }
 
-      if (!printed) console.log('No new messages')
+      if (!printed) {
+        console.log('No new messages')
+        // Distinguish "waited and nothing came" from "buffer was empty right now".
+        if (opts.wait) process.exit(EXIT.TIMEOUT)
+      }
     } catch (e) {
       console.error(`Error: ${e.message}`)
       process.exit(1)
@@ -819,14 +840,32 @@ program
       const resp = await request({ action: 'status' })
       if (resp.ok) {
         console.log(`Daemon ID: ${resp.daemonId}`)
+        // Surface the sending identity here: a silent fallback is easiest to catch
+        // at the moment someone is already looking at their setup.
+        const { id, source } = resolveIdentity()
+        const note = { env: '', config: '', session: ' (unstable — derived from this terminal session)', none: ' (no identity set)' }[source]
+        console.log(`Sending as: ${id || 'default'}${note}`)
         const entries = Object.entries(resp.channels)
         if (entries.length === 0) {
           console.log('No active channels')
         } else {
+          const me = id || 'default'
           for (const [name, info] of entries) {
             let line = `  #${name} — ${info.peers} peer(s), ${info.subscribers} subscriber(s), ${info.buffered} buffered`
             if (info.persist) line += ` [persist: ${info.stored} stored]`
             console.log(line)
+            // Aggregate "buffered" cannot answer "do I have unread?" when several
+            // identities share this daemon, so break it down per subscriber.
+            const by = info.bufferedBy || {}
+            const others = Object.entries(by).filter(([sid]) => sid !== me)
+            if (by[me] !== undefined || others.length) {
+              const mine = by[me] || 0
+              let detail = `      unread for ${me}: ${mine}`
+              if (others.length) {
+                detail += ` (others: ${others.map(([sid, n]) => `${sid}=${n}`).join(', ')})`
+              }
+              console.log(detail)
+            }
           }
         }
       } else {

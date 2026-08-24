@@ -197,3 +197,62 @@ describe('persistence', () => {
     assert.ok(typeof s.channels['ch-persist'].stored === 'number')
   })
 })
+
+describe('status bufferedBy', () => {
+  it('reports unread depth per subscriber, not just in aggregate', async () => {
+    const ch = 'buf-detail'
+    await ipc(sockPath, { action: 'join', channel: ch, secret: 's', clientId: 'reader-a' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: 's', clientId: 'reader-b' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: 's', clientId: 'writer' })
+
+    // reader-a drains; reader-b does not, so their depths must differ.
+    await ipc(sockPath, { action: 'send', channel: ch, message: 'one', clientId: 'writer' })
+    await ipc(sockPath, { action: 'send', channel: ch, message: 'two', clientId: 'writer' })
+    await ipc(sockPath, { action: 'read', channel: ch, clientId: 'reader-a' })
+
+    const r = await ipc(sockPath, { action: 'status' })
+    const info = r.channels[ch]
+    assert.ok(info.bufferedBy, 'status must expose a per-subscriber breakdown')
+    assert.equal(info.bufferedBy['reader-a'], 0)
+    assert.ok(info.bufferedBy['reader-b'] >= 2)
+    // Note: a joiner is added to ch.subscribers before its own "X joined" notice is
+    // broadcast, and _send only excludes the literal 'system' sender — so 'writer'
+    // holds its own join announcement. Asserted so a future fix trips this test.
+    assert.equal(info.bufferedBy['writer'], 1)
+    // Aggregate alone could not have distinguished these.
+    assert.equal(info.buffered, Object.values(info.bufferedBy).reduce((a, b) => a + b, 0))
+  })
+})
+
+describe('read --wait leaves a burst buffered', () => {
+  // Documents the semantics the CLI's --drain flag exists to paper over: a parked
+  // waiter is woken with a single message, and the rest of a burst sit in the buffer
+  // until a follow-up read collects them. --drain issues that follow-up read for you.
+  it('wakes on one message and leaves the remainder for the next read', async () => {
+    const ch = 'wait-drain'
+    await ipc(sockPath, { action: 'join', channel: ch, secret: 's', clientId: 'waiter' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: 's', clientId: 'sender' })
+    // Drain the join announcements so only the burst is in play.
+    await ipc(sockPath, { action: 'read', channel: ch, clientId: 'waiter' })
+
+    const pending = ipc(sockPath, { action: 'read', channel: ch, clientId: 'waiter', wait: true, timeout: 10 })
+    await new Promise(r => setTimeout(r, 150))
+
+    for (const m of ['a', 'b', 'c']) {
+      await ipc(sockPath, { action: 'send', channel: ch, message: m, clientId: 'sender' })
+    }
+
+    const woke = await pending
+    assert.equal(woke.ok, true)
+    assert.ok(woke.messages.length >= 1)
+    assert.ok(woke.messages.length < 3, 'a wake does not carry the whole burst')
+
+    // Wake plus follow-up must together account for every message and lose none.
+    // This is the invariant --drain relies on, and it holds however much the wake
+    // itself manages to batch.
+    const rest = await ipc(sockPath, { action: 'read', channel: ch, clientId: 'waiter' })
+    assert.equal(rest.ok, true)
+    const seen = [...woke.messages, ...rest.messages].map(m => m.data)
+    assert.deepEqual(seen, ['a', 'b', 'c'])
+  })
+})

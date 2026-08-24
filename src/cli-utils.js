@@ -95,6 +95,16 @@ function makeMessageFilter(opts = {}, me) {
   }
 }
 
+// Exit codes. Agents branch on these instead of string-matching stderr.
+// 0/1 keep their historical meanings; the rest are additive.
+const EXIT = {
+  OK: 0,
+  ERROR: 1,           // generic failure, message on stderr
+  NOT_IN_CHANNEL: 2,  // channel not joined on this daemon
+  NOTHING_QUEUED: 3,  // send reached no peer daemon and no local subscriber
+  TIMEOUT: 4,         // read --wait hit its deadline with nothing matching
+}
+
 function parseChannelArg(str) {
   const idx = str.indexOf(':')
   if (idx === -1) return { channel: str, secret: str }
@@ -106,6 +116,7 @@ module.exports = {
   chatName,
   parseChannelArg,
   makeMessageFilter,
+  EXIT,
   resolveIdentity,
   setIdentity,
   isStableIdentity,
