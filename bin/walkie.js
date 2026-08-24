@@ -204,13 +204,15 @@ function runClaudeAsync(prompt, sessionId, model, extraArgs) {
 
     child.on('error', (err) => reject(err))
     child.on('close', (code) => {
-      // claude -p often exits non-zero while still producing valid output
-      // on stdout or stderr. Use whichever has content.
-      const output = stdout.trim() || stderr.trim()
+      // claude -p often exits non-zero while still producing valid output on stdout,
+      // so a non-zero code alone is not a failure. stderr is NOT a fallback for
+      // output: treating it as one posts the error text into the channel as if it
+      // were the agent's reply.
+      const output = stdout.trim()
       if (!output) {
-        return reject(new Error(stderr || `claude exited with code ${code}`))
+        return reject(new Error(stderr.trim() || `claude exited with code ${code}`))
       }
-      resolve(_parseClaude({ stdout: output, stderr: '' }))
+      resolve(_parseClaude({ stdout: output }))
     })
   })
 }
@@ -344,6 +346,12 @@ program
     const extraArgs = opts.agentArgs ? opts.agentArgs.split(/\s+/) : null
     const maxConcurrency = Math.max(1, parseInt(opts.concurrency, 10) || 1)
     const useAsync = cli === 'claude' && maxConcurrency > 1
+    if (maxConcurrency > 1 && cli !== 'claude') {
+      // runCodex is spawnSync and blocks the event loop, so the pool can never
+      // exceed one in flight. Say so rather than printing a concurrency banner
+      // that does not reflect what happens.
+      console.error(`\x1b[33mWarning: --concurrency is only supported for the claude CLI; ${cli} runs one task at a time.\x1b[0m`)
+    }
     const askFn = cli === 'claude' ? runClaude : runCodex
     const askFnAsync = cli === 'claude' ? runClaudeAsync : null
 
@@ -355,7 +363,7 @@ program
       }
 
       console.log(`\x1b[1m--- walkie agent: #${channel} ---\x1b[0m`)
-      console.log(`\x1b[2mAgent "${agentName}" powered by ${cli}. Listening for messages.${maxConcurrency > 1 ? ` (concurrency: ${maxConcurrency})` : ''}\x1b[0m`)
+      console.log(`\x1b[2mAgent "${agentName}" powered by ${cli}. Listening for messages.${useAsync ? ` (concurrency: ${maxConcurrency})` : ''}\x1b[0m`)
       console.log(`\x1b[2mOthers can talk to this agent with: walkie chat ${channel}\x1b[0m`)
       console.log(`\x1b[2mCtrl+C to stop.\x1b[0m`)
       console.log()

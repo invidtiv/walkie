@@ -105,6 +105,24 @@ const EXIT = {
   TIMEOUT: 4,         // read --wait hit its deadline with nothing matching
 }
 
+// Verify a pid actually belongs to a walkie daemon before signalling it. The pid
+// file can outlive its process, and the OS recycles pids — without this check a
+// stale pid file means walkie SIGKILLs whatever unrelated process inherited it.
+function isWalkieProcess(pid) {
+  if (!pid || Number.isNaN(pid)) return false
+  // No cheap cmdline probe on Windows; fall back to trusting the pid file there.
+  if (process.platform === 'win32') return true
+  try {
+    const out = require('child_process').execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return /walkie|daemon\.js/.test(out)
+  } catch {
+    return false
+  }
+}
+
 function parseChannelArg(str) {
   const idx = str.indexOf(':')
   if (idx === -1) return { channel: str, secret: str }
@@ -117,6 +135,7 @@ module.exports = {
   parseChannelArg,
   makeMessageFilter,
   EXIT,
+  isWalkieProcess,
   resolveIdentity,
   setIdentity,
   isStableIdentity,

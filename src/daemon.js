@@ -5,6 +5,7 @@ const path = require('path')
 const os = require('os')
 const { deriveTopic, agentId } = require('./crypto')
 const store = require('./store')
+const { isWalkieProcess } = require('./cli-utils')
 
 const IS_WINDOWS = process.platform === 'win32'
 const WALKIE_DIR = process.env.WALKIE_DIR || path.join(os.homedir(), '.walkie')
@@ -38,7 +39,9 @@ class WalkieDaemon {
     // Kill any old daemon before taking over
     try {
       const oldPid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10)
-      if (oldPid !== process.pid && this._isRunning(oldPid)) {
+      // Confirm the pid is a walkie daemon before signalling — pid files outlive
+      // their process and the OS recycles pids.
+      if (oldPid !== process.pid && this._isRunning(oldPid) && isWalkieProcess(oldPid)) {
         log(`Killing old daemon pid=${oldPid}`)
         try { process.kill(oldPid, 'SIGTERM') } catch {}
         // Give it a moment to shut down
@@ -268,6 +271,7 @@ class WalkieDaemon {
   // ── Channel management ────────────────────────────────────────────
 
   async _joinChannel(name, secret, persist) {
+    let carriedSubscribers = null
     if (this.channels.has(name)) {
       const ch = this.channels.get(name)
       // If rejoining with a different secret, leave the old channel and rejoin
@@ -276,6 +280,9 @@ class WalkieDaemon {
       const newTopicHex = newTopic.toString('hex')
       if (ch.topicHex !== newTopicHex) {
         log(`Channel "${name}" secret changed, rejoining with new topic`)
+        // Other local clients are on this channel. Rejoining swaps the swarm topic;
+        // it must not silently drop their subscriptions and buffered messages.
+        carriedSubscribers = ch.subscribers
         await this._leaveChannel(name)
         // Fall through to join with new secret
       } else {
@@ -305,7 +312,7 @@ class WalkieDaemon {
       persist: !!persist,
       knownMsgIds: persist ? store.loadIds(name) : null,
       peers: new Set(),
-      subscribers: new Map()
+      subscribers: carriedSubscribers || new Map()
     })
 
     // Re-announce topics to already-connected peers (fixes race condition

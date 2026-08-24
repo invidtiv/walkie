@@ -3,6 +3,7 @@ const path = require('path')
 const os = require('os')
 const { spawn } = require('child_process')
 const fs = require('fs')
+const { isWalkieProcess } = require('./cli-utils')
 
 const IS_WINDOWS = process.platform === 'win32'
 const WALKIE_DIR = process.env.WALKIE_DIR || path.join(os.homedir(), '.walkie')
@@ -80,7 +81,9 @@ async function ensureDaemon() {
   try { fs.unlinkSync(IPC_PATH) } catch {}
   try {
     const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10)
-    if (isProcessRunning(pid)) {
+    // Only signal a pid we can confirm is a walkie daemon. A stale pid file plus pid
+    // reuse would otherwise mean killing an unrelated process of the user's.
+    if (isProcessRunning(pid) && isWalkieProcess(pid)) {
       // Kill the stale daemon that we couldn't connect to (socket gone but process alive)
       try { process.kill(pid, 'SIGTERM') } catch {}
       await new Promise(r => setTimeout(r, 500))
