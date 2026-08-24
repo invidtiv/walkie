@@ -159,6 +159,15 @@ function ensureIdentity() {
   return name
 }
 
+// Render one message. Ids are opt-in because they are noise for humans but the
+// only way for an agent to correlate a reply with the question it answers.
+function formatMessage(msg, opts = {}) {
+  const time = new Date(msg.ts).toLocaleTimeString()
+  let head = `[${time}] ${msg.from}`
+  if (opts.ids) head += ` [${msg.id}${msg.replyTo ? ` \u21a9 ${msg.replyTo}` : ''}]`
+  return `${head}: ${msg.data}`
+}
+
 function detectCli() {
   const { spawnSync } = require('child_process')
   for (const cmd of ['claude', 'codex']) {
@@ -598,6 +607,7 @@ program
   .option('--from-others', 'Exclude your own messages')
   .option('--no-system', 'Exclude join/leave system messages')
   .option('--from <name>', 'Only messages from this sender')
+  .option('--ids', 'Show message ids and reply-to references with --pretty')
   .action(async (channelArg, opts) => {
     try {
       const { channel, secret } = parseChannelArg(channelArg)
@@ -634,8 +644,7 @@ program
         if (opts.exec) {
           execForMessage(opts.exec, msg, channel)
         } else if (opts.pretty) {
-          const time = new Date(msg.ts).toLocaleTimeString()
-          console.log(`[${time}] ${msg.from}: ${msg.data}`)
+          console.log(formatMessage(msg, opts))
         } else {
           console.log(JSON.stringify(msg))
         }
@@ -649,7 +658,8 @@ program
 program
   .command('send <channel> [message]')
   .description('Send a message to a channel (reads from stdin if no message given)')
-  .action(async (channelArg, message) => {
+  .option('--reply-to <id>', 'Mark this message as a reply to a message id')
+  .action(async (channelArg, message, opts) => {
     try {
       // Read from stdin if no message argument provided
       if (!message) {
@@ -666,9 +676,24 @@ program
 
       const cid = clientId()
       const channel = await autoJoin(channelArg, cid)
-      const resp = await request({ action: 'send', channel, message, clientId: cid })
+      const sendCmd = { action: 'send', channel, message, clientId: cid }
+      if (opts.replyTo) sendCmd.replyTo = opts.replyTo
+      const resp = await request(sendCmd)
       if (resp.ok) {
-        console.log(`Sent (delivered to ${resp.delivered} recipient${resp.delivered !== 1 ? 's' : ''})`)
+        // "Delivered" overclaimed: reaching a peer daemon says nothing about whether
+        // any agent consumed the message. Report where it was queued instead.
+        const peers = resp.peerDaemons
+        const subs = resp.localSubscribers
+        if (peers === undefined && subs === undefined) {
+          console.log(`Queued (${resp.delivered} recipient${resp.delivered !== 1 ? 's' : ''})`)
+        } else {
+          const parts = []
+          if (peers) parts.push(`${peers} peer daemon${peers !== 1 ? 's' : ''}`)
+          if (subs) parts.push(`${subs} local subscriber${subs !== 1 ? 's' : ''}`)
+          console.log(parts.length
+            ? `Queued at ${parts.join(', ')}`
+            : 'Queued — no peers or subscribers on this channel yet')
+        }
       } else {
         console.error(`Error: ${resp.error}`)
         process.exit(1)
@@ -687,6 +712,7 @@ program
   .option('--from-others', 'Exclude your own messages')
   .option('--no-system', 'Exclude join/leave system messages')
   .option('--from <name>', 'Only messages from this sender')
+  .option('--ids', 'Show message ids and reply-to references')
   .action(async (channelArg, opts) => {
     try {
       const cid = clientId()
@@ -719,8 +745,7 @@ program
         }
 
         for (const msg of resp.messages.filter(keep)) {
-          const time = new Date(msg.ts).toLocaleTimeString()
-          console.log(`[${time}] ${msg.from}: ${msg.data}`)
+          console.log(formatMessage(msg, opts))
           printed = true
         }
 

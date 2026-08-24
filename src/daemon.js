@@ -121,8 +121,8 @@ class WalkieDaemon {
           const id = cmd.clientId || 'default'
           const ch = this.channels.get(cmd.channel)
           if (ch && ch.subscribers.has(id)) ch.subscribers.get(id).lastSeen = Date.now()
-          const count = this._send(cmd.channel, cmd.message, id)
-          reply({ ok: true, delivered: count })
+          const { total, local, peers } = this._send(cmd.channel, cmd.message, id, cmd.replyTo)
+          reply({ ok: true, delivered: total, localSubscribers: local, peerDaemons: peers })
           break
         }
         case 'read': {
@@ -395,7 +395,7 @@ class WalkieDaemon {
       for (const [name, ch] of this.channels) {
         if (ch.topicHex === msg.topic) {
           const msgId = msg.msgId || `${msg.id}-${msg.ts}`
-          const entry = { from: msg.from || msg.id || remoteKey.slice(0, 8), data: msg.data, ts: msg.ts, id: msgId }
+          const entry = { from: msg.from || msg.id || remoteKey.slice(0, 8), data: msg.data, ts: msg.ts, id: msgId, ...(msg.replyTo ? { replyTo: msg.replyTo } : {}) }
           // Dedup for persistent channels
           if (ch.persist) {
             if (ch.knownMsgIds.has(msgId)) break
@@ -461,7 +461,7 @@ class WalkieDaemon {
 
   // ── Send ──────────────────────────────────────────────────────────
 
-  _send(channelName, message, senderClientId) {
+  _send(channelName, message, senderClientId, replyTo) {
     const ch = this.channels.get(channelName)
     if (!ch) throw new Error(`Not in channel: ${channelName}`)
 
@@ -474,20 +474,21 @@ class WalkieDaemon {
       id: this.id,
       from: senderClientId || this.id,
       msgId,
-      ts
+      ts,
+      ...(replyTo ? { replyTo } : {})
     }) + '\n'
 
-    let count = 0
+    let peerCount = 0
     for (const remoteKey of ch.peers) {
       const peer = this.peers.get(remoteKey)
       if (peer?.conn?.writable) {
         peer.conn.write(payload)
-        count++
+        peerCount++
       }
     }
 
     // Deliver to local subscribers (excluding sender)
-    const entry = { from: senderClientId || this.id, data: message, ts, id: msgId }
+    const entry = { from: senderClientId || this.id, data: message, ts, id: msgId, ...(replyTo ? { replyTo } : {}) }
 
     // Persist if channel has persistence enabled
     if (ch.persist) {
@@ -495,10 +496,10 @@ class WalkieDaemon {
       store.append(channelName, entry)
     }
 
+    // Report peer daemons and local subscribers separately: reaching a peer daemon
+    // is not the same as any agent having consumed the message.
     const localCount = this._deliverLocal(ch, entry, senderClientId)
-    count += localCount
-
-    return count
+    return { total: peerCount + localCount, local: localCount, peers: peerCount }
   }
 
   _deliverLocal(ch, entry, excludeId) {
