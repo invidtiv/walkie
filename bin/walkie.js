@@ -3,7 +3,7 @@
 const { program } = require('commander')
 const { request, streamMessages } = require('../src/client')
 const { clientId, chatName, parseChannelArg, resolveIdentity, setIdentity,
-  isStableIdentity, identityWarning, configPath } = require('../src/cli-utils')
+  isStableIdentity, identityWarning, configPath, makeMessageFilter } = require('../src/cli-utils')
 
 program
   .name('walkie')
@@ -595,6 +595,9 @@ program
   .option('--pretty', 'Human-readable format instead of JSONL')
   .option('--exec <cmd>', 'Run command for each message (env: WALKIE_MSG, WALKIE_FROM, WALKIE_TS, WALKIE_CHANNEL)')
   .option('--persist', 'Enable persistent message storage')
+  .option('--from-others', 'Exclude your own messages')
+  .option('--no-system', 'Exclude join/leave system messages')
+  .option('--from <name>', 'Only messages from this sender')
   .action(async (channelArg, opts) => {
     try {
       const { channel, secret } = parseChannelArg(channelArg)
@@ -624,7 +627,10 @@ program
       process.on('SIGINT', cleanup)
       process.on('SIGTERM', cleanup)
 
+      const keep = makeMessageFilter(opts, cid || 'default')
+
       await streamMessages(channel, secret, cid, abort, (msg) => {
+        if (!keep(msg)) return
         if (opts.exec) {
           execForMessage(opts.exec, msg, channel)
         } else if (opts.pretty) {
@@ -678,32 +684,53 @@ program
   .description('Read pending messages from a channel')
   .option('-w, --wait', 'Block until a message arrives')
   .option('-t, --timeout <seconds>', 'Optional timeout for --wait in seconds')
+  .option('--from-others', 'Exclude your own messages')
+  .option('--no-system', 'Exclude join/leave system messages')
+  .option('--from <name>', 'Only messages from this sender')
   .action(async (channelArg, opts) => {
     try {
       const cid = clientId()
+      const me = cid || 'default'
       const channel = await autoJoin(channelArg, cid)
-      const cmd = { action: 'read', channel, clientId: cid }
-      if (opts.wait) {
-        cmd.wait = true
-        if (opts.timeout) cmd.timeout = parseInt(opts.timeout, 10)
-      }
-      const timeout = opts.wait
-        ? (opts.timeout ? (parseInt(opts.timeout, 10) + 5) * 1000 : 0)  // 0 = no timeout
-        : 10000
-      const resp = await request(cmd, timeout)
-      if (resp.ok) {
-        if (resp.messages.length === 0) {
-          console.log('No new messages')
-        } else {
-          for (const msg of resp.messages) {
-            const time = new Date(msg.ts).toLocaleTimeString()
-            console.log(`[${time}] ${msg.from}: ${msg.data}`)
+      const keep = makeMessageFilter(opts, me)
+      const deadline = opts.wait && opts.timeout
+        ? Date.now() + parseInt(opts.timeout, 10) * 1000
+        : null
+
+      let printed = false
+      while (true) {
+        const cmd = { action: 'read', channel, clientId: cid }
+        let secondsLeft = null
+        if (opts.wait) {
+          cmd.wait = true
+          if (deadline) {
+            secondsLeft = Math.ceil((deadline - Date.now()) / 1000)
+            if (secondsLeft <= 0) break
+            cmd.timeout = secondsLeft
           }
         }
-      } else {
-        console.error(`Error: ${resp.error}`)
-        process.exit(1)
+        const timeout = opts.wait
+          ? (secondsLeft !== null ? (secondsLeft + 5) * 1000 : 0)  // 0 = no timeout
+          : 10000
+        const resp = await request(cmd, timeout)
+        if (!resp.ok) {
+          console.error(`Error: ${resp.error}`)
+          process.exit(1)
+        }
+
+        for (const msg of resp.messages.filter(keep)) {
+          const time = new Date(msg.ts).toLocaleTimeString()
+          console.log(`[${time}] ${msg.from}: ${msg.data}`)
+          printed = true
+        }
+
+        if (printed || !opts.wait) break
+        // --wait was woken by traffic the caller filtered out. Keep waiting rather
+        // than handing back an empty result and burning their wake-up on noise.
+        if (deadline && Date.now() >= deadline) break
       }
+
+      if (!printed) console.log('No new messages')
     } catch (e) {
       console.error(`Error: ${e.message}`)
       process.exit(1)

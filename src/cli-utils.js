@@ -82,6 +82,19 @@ function chatName() {
   return os.hostname().split('.')[0]
 }
 
+// Build a predicate over message objects. Filtering on objects rather than on
+// rendered text avoids the trap that message bodies are unprefixed continuation
+// lines, so a naive per-line filter keeps the body of a message whose header it
+// just dropped.
+function makeMessageFilter(opts = {}, me) {
+  return (msg) => {
+    if (opts.system === false && (msg.from === 'system' || msg.from === 'daemon')) return false
+    if (opts.fromOthers && msg.from === me) return false
+    if (opts.from && msg.from !== opts.from) return false
+    return true
+  }
+}
+
 function parseChannelArg(str) {
   const idx = str.indexOf(':')
   if (idx === -1) return { channel: str, secret: str }
@@ -92,6 +105,7 @@ module.exports = {
   clientId,
   chatName,
   parseChannelArg,
+  makeMessageFilter,
   resolveIdentity,
   setIdentity,
   isStableIdentity,

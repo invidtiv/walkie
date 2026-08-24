@@ -175,3 +175,48 @@ describe('chatName with stored identity', () => {
     assert.equal(chatName(), os.hostname().split('.')[0])
   })
 })
+
+describe('makeMessageFilter', () => {
+  const sys = { from: 'system', data: 'bob joined' }
+  const daemon = { from: 'daemon', data: 'note' }
+  const mine = { from: 'alice', data: 'mine' }
+  const theirs = { from: 'bob', data: 'theirs' }
+  const all = [sys, daemon, mine, theirs]
+
+  function apply(opts) {
+    const { makeMessageFilter } = load()
+    return all.filter(makeMessageFilter(opts, 'alice')).map(m => m.from)
+  }
+
+  it('passes everything by default', () => {
+    assert.deepEqual(apply({}), ['system', 'daemon', 'alice', 'bob'])
+  })
+
+  it('--no-system drops system and daemon traffic', () => {
+    assert.deepEqual(apply({ system: false }), ['alice', 'bob'])
+  })
+
+  it('--from-others drops your own messages', () => {
+    assert.deepEqual(apply({ fromOthers: true }), ['system', 'daemon', 'bob'])
+  })
+
+  it('--from selects a single sender', () => {
+    assert.deepEqual(apply({ from: 'bob' }), ['bob'])
+  })
+
+  it('filters compose', () => {
+    assert.deepEqual(apply({ system: false, fromOthers: true }), ['bob'])
+  })
+
+  it('an absent identity still filters against "default"', () => {
+    const { makeMessageFilter } = load()
+    const msgs = [{ from: 'default', data: 'x' }, { from: 'bob', data: 'y' }]
+    const kept = msgs.filter(makeMessageFilter({ fromOthers: true }, 'default'))
+    assert.deepEqual(kept.map(m => m.from), ['bob'])
+  })
+
+  it('keeps system messages when only --from-others is set', () => {
+    // --from-others and --no-system are independent; one must not imply the other.
+    assert.ok(apply({ fromOthers: true }).includes('system'))
+  })
+})
