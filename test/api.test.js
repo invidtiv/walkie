@@ -1,6 +1,6 @@
 const { describe, it, before, after } = require('node:test')
 const assert = require('node:assert/strict')
-const { createTempDir, startDaemon, stopDaemon, cleanupDir } = require('./helpers')
+const { createTempDir, startDaemon, stopDaemon, cleanupDir, SECRET } = require('./helpers')
 
 let tmpDir, sockPath
 
@@ -22,12 +22,12 @@ describe('api.listen()', () => {
     const { listen } = require('../src/api')
     const { request } = require('../src/client')
 
-    const ch = await listen('test-api:secret', { id: 'bot' })
+    const ch = await listen(`test-api:${SECRET}`, { id: 'bot' })
     assert.equal(ch.channel, 'test-api')
     assert.equal(ch.id, 'bot')
 
     // Send from a different client
-    await request({ action: 'join', channel: 'test-api', secret: 'secret', clientId: 'sender' })
+    await request({ action: 'join', channel: 'test-api', secret: SECRET, clientId: 'sender' })
 
     const received = new Promise((resolve) => {
       ch.on('message', (msg) => {
@@ -49,10 +49,10 @@ describe('api.listen()', () => {
     const { listen } = require('../src/api')
     const { request } = require('../src/client')
 
-    const ch = await listen('test-send:secret', { id: 'responder' })
+    const ch = await listen(`test-send:${SECRET}`, { id: 'responder' })
 
     // Join as a reader
-    await request({ action: 'join', channel: 'test-send', secret: 'secret', clientId: 'reader' })
+    await request({ action: 'join', channel: 'test-send', secret: SECRET, clientId: 'reader' })
 
     // Send via API
     const result = await ch.send('hello from API')
@@ -72,7 +72,7 @@ describe('api.listen()', () => {
     const { listen } = require('../src/api')
     const { request } = require('../src/client')
 
-    const ch = await listen('test-self:secret', { id: 'self-test' })
+    const ch = await listen(`test-self:${SECRET}`, { id: 'self-test' })
 
     const messages = []
     ch.on('message', (msg) => messages.push(msg))
@@ -81,7 +81,7 @@ describe('api.listen()', () => {
     await ch.send('self-message')
 
     // Send from someone else — should arrive
-    await request({ action: 'join', channel: 'test-self', secret: 'secret', clientId: 'other' })
+    await request({ action: 'join', channel: 'test-self', secret: SECRET, clientId: 'other' })
     await request({ action: 'send', channel: 'test-self', message: 'from-other', clientId: 'other' })
 
     // Give the stream loop time to deliver
@@ -101,9 +101,9 @@ describe('api.send()', () => {
     const { request } = require('../src/client')
 
     // Set up a listener first
-    await request({ action: 'join', channel: 'test-oneshot', secret: 'secret', clientId: 'receiver' })
+    await request({ action: 'join', channel: 'test-oneshot', secret: SECRET, clientId: 'receiver' })
 
-    const result = await send('test-oneshot:secret', 'fire-and-forget', { id: 'shooter' })
+    const result = await send(`test-oneshot:${SECRET}`, 'fire-and-forget', { id: 'shooter' })
     assert.ok(result.delivered >= 1)
 
     // Verify receiver got it

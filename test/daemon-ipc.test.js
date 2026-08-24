@@ -1,6 +1,6 @@
 const { describe, it, before, after } = require('node:test')
 const assert = require('node:assert/strict')
-const { createTempDir, ipc, startDaemon, stopDaemon, cleanupDir } = require('./helpers')
+const { createTempDir, ipc, startDaemon, stopDaemon, cleanupDir, SECRET } = require('./helpers')
 
 let tmpDir, sockPath
 
@@ -41,7 +41,7 @@ describe('status', () => {
 
 describe('join + status', () => {
   it('shows channel after join', async () => {
-    const r = await ipc(sockPath, { action: 'join', channel: 'ch1', secret: 's1', clientId: 'alice' })
+    const r = await ipc(sockPath, { action: 'join', channel: 'ch1', secret: SECRET, clientId: 'alice' })
     assert.equal(r.ok, true)
 
     const s = await ipc(sockPath, { action: 'status' })
@@ -50,7 +50,7 @@ describe('join + status', () => {
   })
 
   it('is idempotent', async () => {
-    const r = await ipc(sockPath, { action: 'join', channel: 'ch1', secret: 's1', clientId: 'alice' })
+    const r = await ipc(sockPath, { action: 'join', channel: 'ch1', secret: SECRET, clientId: 'alice' })
     assert.equal(r.ok, true)
     // Still just 1 subscriber
     const s = await ipc(sockPath, { action: 'status' })
@@ -65,8 +65,8 @@ describe('send + read', () => {
   })
 
   it('delivers messages to other subscribers, excludes sender', async () => {
-    await ipc(sockPath, { action: 'join', channel: 'ch2', secret: 's2', clientId: 'alice' })
-    await ipc(sockPath, { action: 'join', channel: 'ch2', secret: 's2', clientId: 'bob' })
+    await ipc(sockPath, { action: 'join', channel: 'ch2', secret: SECRET, clientId: 'alice' })
+    await ipc(sockPath, { action: 'join', channel: 'ch2', secret: SECRET, clientId: 'bob' })
     // Drain any system announcements from joins
     await ipc(sockPath, { action: 'read', channel: 'ch2', clientId: 'alice' })
     await ipc(sockPath, { action: 'read', channel: 'ch2', clientId: 'bob' })
@@ -91,7 +91,7 @@ describe('send + read', () => {
   })
 
   it('read with no messages returns empty array', async () => {
-    await ipc(sockPath, { action: 'join', channel: 'ch-empty', secret: 's', clientId: 'reader' })
+    await ipc(sockPath, { action: 'join', channel: 'ch-empty', secret: SECRET, clientId: 'reader' })
     const r = await ipc(sockPath, { action: 'read', channel: 'ch-empty', clientId: 'reader' })
     assert.equal(r.ok, true)
     assert.deepEqual(r.messages, [])
@@ -105,7 +105,7 @@ describe('send + read', () => {
 
 describe('read --wait', () => {
   it('with timeout returns empty after timeout', async () => {
-    await ipc(sockPath, { action: 'join', channel: 'ch-wait', secret: 's', clientId: 'waiter' })
+    await ipc(sockPath, { action: 'join', channel: 'ch-wait', secret: SECRET, clientId: 'waiter' })
     // Drain any system messages
     await ipc(sockPath, { action: 'read', channel: 'ch-wait', clientId: 'waiter' })
 
@@ -118,8 +118,8 @@ describe('read --wait', () => {
   })
 
   it('resolves when a message arrives', async () => {
-    await ipc(sockPath, { action: 'join', channel: 'ch-wait2', secret: 's', clientId: 'sender2' })
-    await ipc(sockPath, { action: 'join', channel: 'ch-wait2', secret: 's', clientId: 'waiter2' })
+    await ipc(sockPath, { action: 'join', channel: 'ch-wait2', secret: SECRET, clientId: 'sender2' })
+    await ipc(sockPath, { action: 'join', channel: 'ch-wait2', secret: SECRET, clientId: 'waiter2' })
     // Drain system messages
     await ipc(sockPath, { action: 'read', channel: 'ch-wait2', clientId: 'waiter2' })
 
@@ -139,7 +139,7 @@ describe('read --wait', () => {
 
 describe('leave', () => {
   it('removes subscriber', async () => {
-    await ipc(sockPath, { action: 'join', channel: 'ch-leave', secret: 's', clientId: 'leaver' })
+    await ipc(sockPath, { action: 'join', channel: 'ch-leave', secret: SECRET, clientId: 'leaver' })
     const s1 = await ipc(sockPath, { action: 'status' })
     assert.equal(s1.channels['ch-leave'].subscribers, 1)
 
@@ -150,8 +150,8 @@ describe('leave', () => {
   })
 
   it('announces leave to remaining subscribers', async () => {
-    await ipc(sockPath, { action: 'join', channel: 'ch-announce', secret: 's', clientId: 'stayer' })
-    await ipc(sockPath, { action: 'join', channel: 'ch-announce', secret: 's', clientId: 'goer' })
+    await ipc(sockPath, { action: 'join', channel: 'ch-announce', secret: SECRET, clientId: 'stayer' })
+    await ipc(sockPath, { action: 'join', channel: 'ch-announce', secret: SECRET, clientId: 'goer' })
     // Drain join announcements
     await ipc(sockPath, { action: 'read', channel: 'ch-announce', clientId: 'stayer' })
 
@@ -166,11 +166,11 @@ describe('leave', () => {
 
 describe('join announcements', () => {
   it('announces new subscriber to existing ones', async () => {
-    await ipc(sockPath, { action: 'join', channel: 'ch-join-ann', secret: 's', clientId: 'first' })
+    await ipc(sockPath, { action: 'join', channel: 'ch-join-ann', secret: SECRET, clientId: 'first' })
     // Drain
     await ipc(sockPath, { action: 'read', channel: 'ch-join-ann', clientId: 'first' })
 
-    await ipc(sockPath, { action: 'join', channel: 'ch-join-ann', secret: 's', clientId: 'second' })
+    await ipc(sockPath, { action: 'join', channel: 'ch-join-ann', secret: SECRET, clientId: 'second' })
 
     const r = await ipc(sockPath, { action: 'read', channel: 'ch-join-ann', clientId: 'first' })
     const sysMsg = r.messages.find(m => m.from === 'system' && m.data.includes('second') && m.data.includes('joined'))
@@ -182,7 +182,7 @@ describe('persistence', () => {
   it('join with persist writes to disk on send', async () => {
     const fs = require('fs')
     const path = require('path')
-    await ipc(sockPath, { action: 'join', channel: 'ch-persist', secret: 's', clientId: 'writer', persist: true })
+    await ipc(sockPath, { action: 'join', channel: 'ch-persist', secret: SECRET, clientId: 'writer', persist: true })
     await ipc(sockPath, { action: 'send', channel: 'ch-persist', message: 'saved', clientId: 'writer' })
 
     const fp = path.join(tmpDir, 'messages', 'ch-persist.jsonl')
@@ -201,9 +201,9 @@ describe('persistence', () => {
 describe('status bufferedBy', () => {
   it('reports unread depth per subscriber, not just in aggregate', async () => {
     const ch = 'buf-detail'
-    await ipc(sockPath, { action: 'join', channel: ch, secret: 's', clientId: 'reader-a' })
-    await ipc(sockPath, { action: 'join', channel: ch, secret: 's', clientId: 'reader-b' })
-    await ipc(sockPath, { action: 'join', channel: ch, secret: 's', clientId: 'writer' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'reader-a' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'reader-b' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'writer' })
 
     // reader-a drains; reader-b does not, so their depths must differ.
     await ipc(sockPath, { action: 'send', channel: ch, message: 'one', clientId: 'writer' })
@@ -230,8 +230,8 @@ describe('read --wait leaves a burst buffered', () => {
   // until a follow-up read collects them. --drain issues that follow-up read for you.
   it('wakes on one message and leaves the remainder for the next read', async () => {
     const ch = 'wait-drain'
-    await ipc(sockPath, { action: 'join', channel: ch, secret: 's', clientId: 'waiter' })
-    await ipc(sockPath, { action: 'join', channel: ch, secret: 's', clientId: 'sender' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'waiter' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'sender' })
     // Drain the join announcements so only the burst is in play.
     await ipc(sockPath, { action: 'read', channel: ch, clientId: 'waiter' })
 
@@ -254,5 +254,30 @@ describe('read --wait leaves a burst buffered', () => {
     assert.equal(rest.ok, true)
     const seen = [...woke.messages, ...rest.messages].map(m => m.data)
     assert.deepEqual(seen, ['a', 'b', 'c'])
+  })
+})
+
+describe('secret change preserves other subscribers', () => {
+  it('rejoining with a new secret does not drop existing subscribers', async () => {
+    const ch = 'secret-swap'
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'stayer' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'switcher' })
+    await ipc(sockPath, { action: 'read', channel: ch, clientId: 'stayer' })
+
+    // switcher rejoins with a different secret, which swaps the swarm topic.
+    const r = await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET + '-alt', clientId: 'switcher' })
+    assert.equal(r.ok, true)
+
+    const st = await ipc(sockPath, { action: 'status' })
+    const info = st.channels[ch]
+    assert.ok(info, 'channel must still exist after the topic swap')
+    assert.ok(info.bufferedBy['stayer'] !== undefined,
+      'a subscriber that did not change its secret must survive the rejoin')
+
+    // And it must still receive traffic on the channel.
+    await ipc(sockPath, { action: 'send', channel: ch, message: 'after swap', clientId: 'switcher' })
+    const got = await ipc(sockPath, { action: 'read', channel: ch, clientId: 'stayer' })
+    assert.ok(got.messages.some(m => m.data === 'after swap'),
+      'surviving subscriber must still receive messages')
   })
 })

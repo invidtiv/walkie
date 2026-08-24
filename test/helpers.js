@@ -6,11 +6,19 @@ const os = require('os')
 
 const DAEMON = path.join(__dirname, '..', 'src', 'daemon.js')
 
+// Topics are SHA-256(channel + secret) and are announced on the public Hyperswarm
+// DHT. A fixed secret means a fixed topic, so a stray daemon elsewhere — on this
+// machine or anyone else's — can join the test's channel and skew peer counts.
+// A per-run secret keeps each run's topics unique to itself.
+const SECRET = 'test-' + require('crypto').randomBytes(8).toString('hex')
+
 function createTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'walkie-test-'))
 }
 
-function ipc(sockPath, cmd, timeout = 5000) {
+// The first join in a run performs a real DHT bootstrap (discovery.flushed()),
+// which regularly exceeds a 5s budget on a cold network.
+function ipc(sockPath, cmd, timeout = 20000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { sock.destroy(); reject(new Error('ipc timeout')) }, timeout)
     const sock = net.connect(sockPath)
@@ -62,4 +70,4 @@ function cleanupDir(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
 }
 
-module.exports = { createTempDir, ipc, startDaemon, stopDaemon, cleanupDir }
+module.exports = { createTempDir, ipc, startDaemon, stopDaemon, cleanupDir, SECRET }
