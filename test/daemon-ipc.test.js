@@ -389,3 +389,61 @@ describe('subscriber reaping', () => {
     }
   })
 })
+
+describe('awaitReply', () => {
+  it('resolves even when another subscriber consumes the reply first', async () => {
+    const ch = 'ack-race'
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'asker' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'answerer' })
+    await ipc(sockPath, { action: 'read', channel: ch, clientId: 'asker' })
+
+    const q = await ipc(sockPath, { action: 'send', channel: ch, message: 'may I?', clientId: 'asker' })
+    const pending = ipc(sockPath, { action: 'awaitReply', channel: ch, clientId: 'asker', replyTo: q.msgId, timeout: 10 })
+    await new Promise(r => setTimeout(r, 100))
+
+    await ipc(sockPath, { action: 'send', channel: ch, message: 'yes', clientId: 'answerer', replyTo: q.msgId })
+    // A concurrent reader drains the asker's buffer, which is what defeated the
+    // original peek-polling implementation.
+    await ipc(sockPath, { action: 'read', channel: ch, clientId: 'asker' })
+
+    const r = await pending
+    assert.equal(r.ok, true)
+    assert.ok(r.reply, 'the ack must not be hidden by whichever reader drained first')
+    assert.equal(r.reply.data, 'yes')
+  })
+
+  it('resolves a reply that arrived before the wait was registered', async () => {
+    const ch = 'ack-fast'
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'asker' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'answerer' })
+
+    const q = await ipc(sockPath, { action: 'send', channel: ch, message: 'q', clientId: 'asker' })
+    // Reply lands first — the caller only learns its own msgId after send returns.
+    await ipc(sockPath, { action: 'send', channel: ch, message: 'fast', clientId: 'answerer', replyTo: q.msgId })
+
+    const r = await ipc(sockPath, { action: 'awaitReply', channel: ch, clientId: 'asker', replyTo: q.msgId, timeout: 5 })
+    assert.equal(r.ok, true)
+    assert.ok(r.reply, 'a reply that beat the registration must still resolve')
+    assert.equal(r.reply.data, 'fast')
+  })
+
+  it('reports a genuine timeout rather than hanging', async () => {
+    const ch = 'ack-timeout'
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'asker' })
+    const q = await ipc(sockPath, { action: 'send', channel: ch, message: 'anyone?', clientId: 'asker' })
+    const r = await ipc(sockPath, { action: 'awaitReply', channel: ch, clientId: 'asker', replyTo: q.msgId, timeout: 1 }, 8000)
+    assert.equal(r.ok, true)
+    assert.equal(r.reply, null)
+    assert.equal(r.timedOut, true)
+  })
+
+  it('does not match a reply to a different message', async () => {
+    const ch = 'ack-wrong'
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'asker' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'answerer' })
+    const q = await ipc(sockPath, { action: 'send', channel: ch, message: 'q1', clientId: 'asker' })
+    await ipc(sockPath, { action: 'send', channel: ch, message: 'unrelated', clientId: 'answerer', replyTo: 'some-other-id' })
+    const r = await ipc(sockPath, { action: 'awaitReply', channel: ch, clientId: 'asker', replyTo: q.msgId, timeout: 1 }, 8000)
+    assert.equal(r.timedOut, true)
+  })
+})

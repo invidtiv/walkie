@@ -31,7 +31,7 @@ How it works:
   A background daemon keeps connections alive between commands.
 
 Docs: https://walkie.sh`)
-  .version('1.6.1')
+  .version('1.6.2')
 
 async function autoJoin(channelArg, cid, persist) {
   const { channel, secret } = parseChannelArg(channelArg)
@@ -775,19 +775,18 @@ program
           const secs = typeof opts.awaitReply === 'string'
             ? Math.max(1, parseInt(opts.awaitReply, 10) || 60)
             : 60
-          const deadline = Date.now() + secs * 1000
-          // Poll with peek so unrelated messages are not consumed out from under
-          // whatever else this agent has reading the channel.
-          while (Date.now() < deadline) {
-            const r = await request({ action: 'read', channel, clientId: cid, peek: true }, 10000)
-            if (r.ok && r.messages) {
-              const hit = r.messages.find(m => m.replyTo === resp.msgId)
-              if (hit) {
-                console.log(formatMessage(hit, opts))
-                return
-              }
-            }
-            await new Promise(res => setTimeout(res, 500))
+          // Ask the daemon to watch for the reply. Polling the buffer cannot work:
+          // any other reader on this identity — the background `read --wait` the
+          // docs recommend — consumes the reply first, and the ack then times out
+          // silently while the answer sits in another process's output. The daemon
+          // matches at delivery time, before buffers, so no reader can hide it.
+          const r = await request(
+            { action: 'awaitReply', channel, clientId: cid, replyTo: resp.msgId, timeout: secs },
+            (secs + 5) * 1000
+          )
+          if (r.ok && r.reply) {
+            console.log(formatMessage(r.reply, opts))
+            return
           }
           console.error(`Error: no reply within ${secs}s`)
           process.exit(EXIT.TIMEOUT)

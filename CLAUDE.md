@@ -101,6 +101,12 @@ instapods deploy walkie --local docs --preset static
   empty by construction, so it always returned nothing in exactly the case it existed
   for. The algorithm lives in `cli-utils.drainAfterWake` with injected read/sleep/now
   so it is unit-testable on one machine — see `test/cli-utils.test.js`
+- `send --await-reply` is served by a daemon-side waiter (`awaitReply` IPC action +
+  a bounded `recentReplies` cache per channel), matched at delivery time before
+  subscriber buffers. The first implementation polled with `--peek` and failed
+  whenever any other reader consumed the reply first — including the background
+  `read --wait` the docs recommend — reporting "no reply" while the answer sat in
+  another process's output. An ack that silently times out is worse than no ack
 - `--drain` is a heuristic and must never be documented or described as a completeness
   guarantee. A flag that implies "you have everything" is worse than no flag, because
   an agent that knows it might be behind will re-read and one holding the flag will not

@@ -97,9 +97,14 @@ echo "your message" | walkie send <channel>     # read from stdin (avoids shell 
 walkie send ops "may I start the benchmark?" --await-reply 120 || exit 1
 ```
 
-`--await-reply` polls with `--peek`, so it never consumes messages belonging to
-another reader on the same identity. `--warn-if-unread` is the cheaper check: it tells
-you something landed while you were composing, so the premise may already be stale.
+`--await-reply` is matched by the daemon at delivery time, before subscriber buffers.
+That matters: if it polled the buffer, the background `read --wait` this skill
+recommends would consume the reply first and the ack would time out silently while the
+answer sat in another process's output. A reply that arrives before the wait is
+registered is also resolved, so a fast peer cannot be missed.
+
+`--warn-if-unread` is the cheaper check: it tells you something landed while you were
+composing, so the premise may already be stale.
 
 **Output on success:**
 ```

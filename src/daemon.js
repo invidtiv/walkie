@@ -18,6 +18,7 @@ const LOG_FILE = path.join(WALKIE_DIR, 'daemon.log')
 const SUBSCRIBER_TTL = parseInt(process.env.WALKIE_SUBSCRIBER_TTL_MS, 10) || 60 * 60 * 1000
 // Sweep at most once a minute, but more often when the TTL is shorter than that
 // (tests drive a very short TTL and need the sweep to actually run).
+const RECENT_REPLY_CACHE = 200
 const REAP_INTERVAL = Math.max(100, Math.min(60 * 1000, SUBSCRIBER_TTL))
 
 function log(...args) {
@@ -136,6 +137,36 @@ class WalkieDaemon {
           const { total, local, peers, recipients, msgId } = this._send(cmd.channel, cmd.message, id, cmd.replyTo, cmd.to)
           const mine = ch && ch.subscribers.has(id) ? ch.subscribers.get(id).messages.length : 0
           reply({ ok: true, delivered: total, localSubscribers: local, peerDaemons: peers, recipients, unread: mine, msgId })
+          break
+        }
+        case 'awaitReply': {
+          const ch = this.channels.get(cmd.channel)
+          if (!ch) { reply({ ok: false, error: `Not in channel: ${cmd.channel}` }); return }
+          if (!cmd.replyTo) { reply({ ok: false, error: 'replyTo required' }); return }
+
+          // The reply may already have arrived while the caller was registering.
+          const already = ch.recentReplies && ch.recentReplies.get(cmd.replyTo)
+          if (already) { reply({ ok: true, reply: already }); return }
+
+          let timer
+          const waiter = {
+            replyTo: cmd.replyTo,
+            fn: (entry) => {
+              if (timer) clearTimeout(timer)
+              reply({ ok: true, reply: entry })
+            },
+          }
+          if (cmd.timeout) {
+            timer = setTimeout(() => {
+              ch.replyWaiters = ch.replyWaiters.filter(w => w !== waiter)
+              reply({ ok: true, reply: null, timedOut: true })
+            }, cmd.timeout * 1000)
+          }
+          ch.replyWaiters.push(waiter)
+          socket.once('close', () => {
+            if (timer) clearTimeout(timer)
+            ch.replyWaiters = ch.replyWaiters.filter(w => w !== waiter)
+          })
           break
         }
         case 'read': {
@@ -281,6 +312,28 @@ class WalkieDaemon {
     }
   }
 
+  // Fire anyone blocked on a reply to this message. Runs at delivery time, before
+  // and independently of subscriber buffers, so a concurrent reader draining the
+  // channel cannot make an ack invisible to the agent that asked for it.
+  _notifyReplyWaiters(ch, entry) {
+    if (!entry || !entry.replyTo) return
+
+    if (ch.recentReplies) {
+      ch.recentReplies.set(entry.replyTo, entry)
+      while (ch.recentReplies.size > RECENT_REPLY_CACHE) {
+        ch.recentReplies.delete(ch.recentReplies.keys().next().value)
+      }
+    }
+
+    if (!ch.replyWaiters || ch.replyWaiters.length === 0) return
+    const matched = ch.replyWaiters.filter(w => w.replyTo === entry.replyTo)
+    if (matched.length === 0) return
+    ch.replyWaiters = ch.replyWaiters.filter(w => w.replyTo !== entry.replyTo)
+    for (const w of matched) {
+      try { w.fn(entry) } catch {}
+    }
+  }
+
   // Drop subscribers that have gone quiet. Deliberately conservative: a subscriber
   // is only reaped when it holds nothing (no buffered messages, no parked waiter),
   // so reaping can never lose a message. Without this, every identity that ever
@@ -351,7 +404,15 @@ class WalkieDaemon {
       // sends and remote receipts. It is a local ordering, not a global one: two
       // daemons have no way to agree on a shared sequence without consensus, so
       // never treat this as a channel-wide total order.
-      seq: 0
+      seq: 0,
+      // Callers blocked on a reply to a specific message id. Held at channel level,
+      // not per subscriber, because a reply belongs to whoever asked the question —
+      // it must not depend on which reader happens to consume it first.
+      replyWaiters: [],
+      // Replies seen recently, keyed by the id they answer. A caller registers its
+      // interest only after its send returns, so a fast reply can arrive first; this
+      // lets awaitReply resolve one that already landed.
+      recentReplies: new Map()
     })
 
     // Re-announce topics to already-connected peers (fixes race condition
@@ -458,6 +519,7 @@ class WalkieDaemon {
             ch.knownMsgIds.add(msgId)
             store.append(name, entry)
           }
+          this._notifyReplyWaiters(ch, entry)
           this._deliverLocal(ch, entry, null, null, entry.to)
           break
         }
@@ -495,6 +557,7 @@ class WalkieDaemon {
             ch.knownMsgIds.add(msgId)
             entry.id = msgId
             store.append(name, entry)
+            this._notifyReplyWaiters(ch, entry)
             this._deliverLocal(ch, entry, null)
             added++
           }
@@ -555,6 +618,8 @@ class WalkieDaemon {
 
     // Report peer daemons and local subscribers separately: reaching a peer daemon
     // is not the same as any agent having consumed the message.
+    this._notifyReplyWaiters(ch, entry)
+
     const recipients = []
     const localCount = this._deliverLocal(ch, entry, senderClientId, recipients, to)
     return { total: peerCount + localCount, local: localCount, peers: peerCount, recipients, msgId }
