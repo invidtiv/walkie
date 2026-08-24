@@ -281,3 +281,86 @@ describe('secret change preserves other subscribers', () => {
       'surviving subscriber must still receive messages')
   })
 })
+
+describe('peek', () => {
+  it('returns buffered messages without consuming them', async () => {
+    const ch = 'peek-ch'
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'r' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'w' })
+    await ipc(sockPath, { action: 'read', channel: ch, clientId: 'r' })
+    await ipc(sockPath, { action: 'send', channel: ch, message: 'kept', clientId: 'w' })
+
+    const a = await ipc(sockPath, { action: 'read', channel: ch, clientId: 'r', peek: true })
+    assert.equal(a.peeked, true)
+    assert.equal(a.messages.length, 1)
+    assert.equal(a.unread, 1)
+
+    // A second peek must see the same message — peeking is not a read.
+    const b = await ipc(sockPath, { action: 'read', channel: ch, clientId: 'r', peek: true })
+    assert.equal(b.messages.length, 1)
+    assert.equal(b.messages[0].data, 'kept')
+
+    // A real read still drains it.
+    const c = await ipc(sockPath, { action: 'read', channel: ch, clientId: 'r' })
+    assert.equal(c.messages.length, 1)
+    const d = await ipc(sockPath, { action: 'read', channel: ch, clientId: 'r', peek: true })
+    assert.equal(d.messages.length, 0)
+  })
+})
+
+describe('directed send', () => {
+  it('delivers only to the addressed subscriber', async () => {
+    const ch = 'unicast-ch'
+    for (const id of ['sender', 'target', 'bystander']) {
+      await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: id })
+    }
+    for (const id of ['target', 'bystander']) {
+      await ipc(sockPath, { action: 'read', channel: ch, clientId: id })
+    }
+
+    const r = await ipc(sockPath, { action: 'send', channel: ch, message: 'private', clientId: 'sender', to: 'target' })
+    assert.equal(r.ok, true)
+    assert.deepEqual(r.recipients, ['target'])
+
+    const t = await ipc(sockPath, { action: 'read', channel: ch, clientId: 'target' })
+    assert.ok(t.messages.some(m => m.data === 'private'))
+
+    const b = await ipc(sockPath, { action: 'read', channel: ch, clientId: 'bystander' })
+    assert.ok(!b.messages.some(m => m.data === 'private'),
+      'a bystander must not receive a directed message')
+  })
+})
+
+describe('per-channel sequence', () => {
+  it('assigns a monotonic local seq to each message', async () => {
+    const ch = 'seq-ch'
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'r' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'w' })
+    await ipc(sockPath, { action: 'read', channel: ch, clientId: 'r' })
+
+    for (const m of ['a', 'b', 'c']) {
+      await ipc(sockPath, { action: 'send', channel: ch, message: m, clientId: 'w' })
+    }
+    const got = await ipc(sockPath, { action: 'read', channel: ch, clientId: 'r' })
+    const seqs = got.messages.map(m => m.seq)
+    assert.equal(seqs.length, 3)
+    for (let i = 1; i < seqs.length; i++) {
+      assert.ok(seqs[i] > seqs[i - 1], 'seq must increase monotonically')
+    }
+  })
+})
+
+describe('send reports unread depth', () => {
+  it('tells the sender how many messages it has not read', async () => {
+    const ch = 'unread-ch'
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'talker' })
+    await ipc(sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'other' })
+    await ipc(sockPath, { action: 'read', channel: ch, clientId: 'talker' })
+
+    await ipc(sockPath, { action: 'send', channel: ch, message: 'incoming', clientId: 'other' })
+    const r = await ipc(sockPath, { action: 'send', channel: ch, message: 'crossing', clientId: 'talker' })
+    assert.equal(r.ok, true)
+    assert.ok(r.unread >= 1, 'sender must see that something arrived while it was composing')
+    assert.ok(r.msgId, 'send must return the id so a reply can be correlated')
+  })
+})

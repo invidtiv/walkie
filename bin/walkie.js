@@ -162,10 +162,31 @@ function ensureIdentity() {
 // Render one message. Ids are opt-in because they are noise for humans but the
 // only way for an agent to correlate a reply with the question it answers.
 function formatMessage(msg, opts = {}) {
-  const time = new Date(msg.ts).toLocaleTimeString()
+  // Local time is the wrong default when the two ends are on different machines,
+  // so --utc renders an unambiguous ISO-8601 instant.
+  const time = opts.utc ? new Date(msg.ts).toISOString() : new Date(msg.ts).toLocaleTimeString()
   let head = `[${time}] ${msg.from}`
   if (opts.ids) head += ` [${msg.id}${msg.replyTo ? ` \u21a9 ${msg.replyTo}` : ''}]`
   return `${head}: ${msg.data}`
+}
+
+// Machine-readable record. `data` is a single JSON string, so multi-line bodies need
+// no boundary parsing; `self` and `type` remove the id-matching and prefix-matching
+// heuristics that consumers otherwise have to write against the human format.
+function toJsonRecord(msg, channel, me) {
+  const isSys = msg.from === 'system' || msg.from === 'daemon'
+  const rec = {
+    seq: msg.seq ?? null,
+    id: msg.id || null,
+    channel,
+    type: isSys ? 'system' : 'message',
+    from: isSys ? null : msg.from,
+    self: !isSys && msg.from === me,
+    ts: msg.ts,
+    data: msg.data,
+  }
+  if (msg.replyTo) rec.replyTo = msg.replyTo
+  return rec
 }
 
 function detectCli() {
@@ -667,6 +688,9 @@ program
   .command('send <channel> [message]')
   .description('Send a message to a channel (reads from stdin if no message given)')
   .option('--reply-to <id>', 'Mark this message as a reply to a message id')
+  .option('--to <id>', 'Deliver only to this subscriber (unicast)')
+  .option('--await-reply [seconds]', 'Block until someone replies to this message (default 60s)')
+  .option('--warn-if-unread', 'Warn on stderr if you have unread messages when sending')
   .action(async (channelArg, message, opts) => {
     try {
       // Read from stdin if no message argument provided
@@ -686,6 +710,7 @@ program
       const channel = await autoJoin(channelArg, cid)
       const sendCmd = { action: 'send', channel, message, clientId: cid }
       if (opts.replyTo) sendCmd.replyTo = opts.replyTo
+      if (opts.to) sendCmd.to = opts.to
       const resp = await request(sendCmd)
       if (resp.ok) {
         // "Delivered" overclaimed: reaching a peer daemon says nothing about whether
@@ -699,12 +724,45 @@ program
           if (peers) parts.push(`${peers} peer daemon${peers !== 1 ? 's' : ''}`)
           if (subs) parts.push(`${subs} local subscriber${subs !== 1 ? 's' : ''}`)
           if (parts.length) {
-            console.log(`Queued at ${parts.join(', ')}`)
+            // Name the local recipients: a bare count is not actionable once a
+            // channel has more than two members.
+            const who = (resp.recipients && resp.recipients.length)
+              ? ` (${resp.recipients.join(', ')})`
+              : ''
+            console.log(`Queued at ${parts.join(', ')}${who}`)
           } else {
             // Nothing anywhere means the message is gone — there is no offline queue.
             console.log('Queued nowhere — no peers or subscribers on this channel')
             process.exit(EXIT.NOTHING_QUEUED)
           }
+        }
+
+        // Delivery is fast but not synchronous. If something arrived while this
+        // message was being composed, the premise behind it may already be stale.
+        if (opts.warnIfUnread && resp.unread > 0) {
+          console.error(`\x1b[33mwarning: ${resp.unread} unread message(s) in your buffer — re-read before acting on this\x1b[0m`)
+        }
+
+        if (opts.awaitReply) {
+          const secs = typeof opts.awaitReply === 'string'
+            ? Math.max(1, parseInt(opts.awaitReply, 10) || 60)
+            : 60
+          const deadline = Date.now() + secs * 1000
+          // Poll with peek so unrelated messages are not consumed out from under
+          // whatever else this agent has reading the channel.
+          while (Date.now() < deadline) {
+            const r = await request({ action: 'read', channel, clientId: cid, peek: true }, 10000)
+            if (r.ok && r.messages) {
+              const hit = r.messages.find(m => m.replyTo === resp.msgId)
+              if (hit) {
+                console.log(formatMessage(hit, opts))
+                return
+              }
+            }
+            await new Promise(res => setTimeout(res, 500))
+          }
+          console.error(`Error: no reply within ${secs}s`)
+          process.exit(EXIT.TIMEOUT)
         }
       } else {
         console.error(`Error: ${resp.error}`)
@@ -726,6 +784,9 @@ program
   .option('--from <name>', 'Only messages from this sender')
   .option('--ids', 'Show message ids and reply-to references')
   .option('--drain', 'On wake, also return everything else already buffered')
+  .option('--json', 'JSONL output, one record per line')
+  .option('--utc', 'Render timestamps as UTC ISO-8601')
+  .option('--peek', 'Show buffered messages without consuming them')
   .action(async (channelArg, opts) => {
     try {
       const cid = clientId()
@@ -739,8 +800,9 @@ program
       let printed = false
       while (true) {
         const cmd = { action: 'read', channel, clientId: cid }
+        if (opts.peek) cmd.peek = true
         let secondsLeft = null
-        if (opts.wait) {
+        if (opts.wait && !opts.peek) {
           cmd.wait = true
           if (deadline) {
             secondsLeft = Math.ceil((deadline - Date.now()) / 1000)
@@ -748,7 +810,7 @@ program
             cmd.timeout = secondsLeft
           }
         }
-        const timeout = opts.wait
+        const timeout = (opts.wait && !opts.peek)
           ? (secondsLeft !== null ? (secondsLeft + 5) * 1000 : 0)  // 0 = no timeout
           : 10000
         const resp = await request(cmd, timeout)
@@ -758,7 +820,7 @@ program
         }
 
         let batch = resp.messages
-        if (opts.wait && opts.drain && batch.length > 0) {
+        if (opts.wait && !opts.peek && opts.drain && batch.length > 0) {
           // A --wait wake carries a single message. Pull whatever else is already
           // buffered so the caller does not have to issue the follow-up read by
           // hand — the dance where messages get missed.
@@ -770,20 +832,20 @@ program
         }
 
         for (const msg of batch.filter(keep)) {
-          console.log(formatMessage(msg, opts))
+          console.log(opts.json ? JSON.stringify(toJsonRecord(msg, channel, me)) : formatMessage(msg, opts))
           printed = true
         }
 
-        if (printed || !opts.wait) break
+        if (printed || !opts.wait || opts.peek) break
         // --wait was woken by traffic the caller filtered out. Keep waiting rather
         // than handing back an empty result and burning their wake-up on noise.
         if (deadline && Date.now() >= deadline) break
       }
 
       if (!printed) {
-        console.log('No new messages')
+        if (!opts.json) console.log('No new messages')
         // Distinguish "waited and nothing came" from "buffer was empty right now".
-        if (opts.wait) process.exit(EXIT.TIMEOUT)
+        if (opts.wait && !opts.peek) process.exit(EXIT.TIMEOUT)
       }
     } catch (e) {
       console.error(`Error: ${e.message}`)
@@ -806,6 +868,50 @@ program
     } catch (e) {
       console.error(`Error: ${e.message}`)
       process.exit(1)
+    }
+  })
+
+program
+  .command('log <channel>')
+  .description('Read persisted history for a channel (non-destructive)')
+  .option('--since <ts>', 'Only messages at or after this epoch-ms or ISO date')
+  .option('--limit <n>', 'Show at most the N most recent messages')
+  .option('--from <name>', 'Only messages from this sender')
+  .option('--no-system', 'Exclude join/leave system messages')
+  .option('--from-others', 'Exclude your own messages')
+  .option('--ids', 'Show message ids and reply-to references')
+  .option('--json', 'JSONL output, one record per line')
+  .option('--utc', 'Render timestamps as UTC ISO-8601')
+  .action((channelArg, opts) => {
+    const store = require('../src/store')
+    const { channel } = parseChannelArg(channelArg)
+
+    let since = 0
+    if (opts.since) {
+      const raw = String(opts.since).trim()
+      since = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw)
+      if (!Number.isFinite(since)) {
+        console.error('Error: --since must be epoch milliseconds or an ISO-8601 date')
+        process.exit(EXIT.ERROR)
+      }
+    }
+
+    const me = clientId() || 'default'
+    let msgs = store.read(channel, since).filter(makeMessageFilter(opts, me))
+    if (opts.limit) {
+      const n = Math.max(1, parseInt(opts.limit, 10) || 1)
+      msgs = msgs.slice(-n)
+    }
+
+    if (msgs.length === 0) {
+      if (!opts.json) {
+        console.log('No stored messages')
+        console.log('\x1b[2m(history requires the channel to have been joined with --persist)\x1b[0m')
+      }
+      return
+    }
+    for (const msg of msgs) {
+      console.log(opts.json ? JSON.stringify(toJsonRecord(msg, channel, me)) : formatMessage(msg, opts))
     }
   })
 

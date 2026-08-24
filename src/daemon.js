@@ -124,8 +124,9 @@ class WalkieDaemon {
           const id = cmd.clientId || 'default'
           const ch = this.channels.get(cmd.channel)
           if (ch && ch.subscribers.has(id)) ch.subscribers.get(id).lastSeen = Date.now()
-          const { total, local, peers } = this._send(cmd.channel, cmd.message, id, cmd.replyTo)
-          reply({ ok: true, delivered: total, localSubscribers: local, peerDaemons: peers })
+          const { total, local, peers, recipients, msgId } = this._send(cmd.channel, cmd.message, id, cmd.replyTo, cmd.to)
+          const mine = ch && ch.subscribers.has(id) ? ch.subscribers.get(id).messages.length : 0
+          reply({ ok: true, delivered: total, localSubscribers: local, peerDaemons: peers, recipients, unread: mine, msgId })
           break
         }
         case 'read': {
@@ -153,13 +154,20 @@ class WalkieDaemon {
             }
           }
 
+          // Peek is non-destructive: look without consuming, so a second reader on
+          // the same identity does not lose messages to the first.
+          if (cmd.peek) {
+            reply({ ok: true, messages: sub.messages.slice(), unread: sub.messages.length, peeked: true })
+            return
+          }
+
           // If messages available or no wait requested, return immediately
           if (sub.messages.length > 0 || !cmd.wait) {
             const msgs = sub.messages.splice(0)
             if (msgs.length > 0) {
               sub.lastReadTs = msgs[msgs.length - 1].ts
             }
-            reply({ ok: true, messages: msgs })
+            reply({ ok: true, messages: msgs, unread: sub.messages.length })
             return
           }
 
@@ -312,7 +320,12 @@ class WalkieDaemon {
       persist: !!persist,
       knownMsgIds: persist ? store.loadIds(name) : null,
       peers: new Set(),
-      subscribers: carriedSubscribers || new Map()
+      subscribers: carriedSubscribers || new Map(),
+      // Monotonic position of messages as THIS daemon saw them, covering both local
+      // sends and remote receipts. It is a local ordering, not a global one: two
+      // daemons have no way to agree on a shared sequence without consensus, so
+      // never treat this as a channel-wide total order.
+      seq: 0
     })
 
     // Re-announce topics to already-connected peers (fixes race condition
@@ -412,14 +425,14 @@ class WalkieDaemon {
       for (const [name, ch] of this.channels) {
         if (ch.topicHex === msg.topic) {
           const msgId = msg.msgId || `${msg.id}-${msg.ts}`
-          const entry = { from: msg.from || msg.id || remoteKey.slice(0, 8), data: msg.data, ts: msg.ts, id: msgId, ...(msg.replyTo ? { replyTo: msg.replyTo } : {}) }
+          const entry = { from: msg.from || msg.id || remoteKey.slice(0, 8), data: msg.data, ts: msg.ts, id: msgId, seq: ++ch.seq, ...(msg.replyTo ? { replyTo: msg.replyTo } : {}), ...(msg.to ? { to: msg.to } : {}) }
           // Dedup for persistent channels
           if (ch.persist) {
             if (ch.knownMsgIds.has(msgId)) break
             ch.knownMsgIds.add(msgId)
             store.append(name, entry)
           }
-          this._deliverLocal(ch, entry, null)
+          this._deliverLocal(ch, entry, null, null, entry.to)
           break
         }
       }
@@ -478,7 +491,7 @@ class WalkieDaemon {
 
   // ── Send ──────────────────────────────────────────────────────────
 
-  _send(channelName, message, senderClientId, replyTo) {
+  _send(channelName, message, senderClientId, replyTo, to) {
     const ch = this.channels.get(channelName)
     if (!ch) throw new Error(`Not in channel: ${channelName}`)
 
@@ -492,7 +505,8 @@ class WalkieDaemon {
       from: senderClientId || this.id,
       msgId,
       ts,
-      ...(replyTo ? { replyTo } : {})
+      ...(replyTo ? { replyTo } : {}),
+      ...(to ? { to } : {})
     }) + '\n'
 
     let peerCount = 0
@@ -505,7 +519,7 @@ class WalkieDaemon {
     }
 
     // Deliver to local subscribers (excluding sender)
-    const entry = { from: senderClientId || this.id, data: message, ts, id: msgId, ...(replyTo ? { replyTo } : {}) }
+    const entry = { from: senderClientId || this.id, data: message, ts, id: msgId, seq: ++ch.seq, ...(replyTo ? { replyTo } : {}), ...(to ? { to } : {}) }
 
     // Persist if channel has persistence enabled
     if (ch.persist) {
@@ -515,14 +529,18 @@ class WalkieDaemon {
 
     // Report peer daemons and local subscribers separately: reaching a peer daemon
     // is not the same as any agent having consumed the message.
-    const localCount = this._deliverLocal(ch, entry, senderClientId)
-    return { total: peerCount + localCount, local: localCount, peers: peerCount }
+    const recipients = []
+    const localCount = this._deliverLocal(ch, entry, senderClientId, recipients, to)
+    return { total: peerCount + localCount, local: localCount, peers: peerCount, recipients, msgId }
   }
 
-  _deliverLocal(ch, entry, excludeId) {
+  _deliverLocal(ch, entry, excludeId, recipients, only) {
     let count = 0
     for (const [id, sub] of ch.subscribers) {
       if (id === excludeId) continue
+      // Directed message: only the addressed subscriber sees it locally.
+      if (only && id !== only) continue
+      if (recipients) recipients.push(id)
       if (sub.waiters.length > 0) {
         sub.waiters.shift()([entry])
       } else {
