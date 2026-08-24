@@ -123,6 +123,36 @@ function isWalkieProcess(pid) {
   }
 }
 
+// Collect the rest of a burst after a --wait wake.
+//
+// The naive version — read once, stop on the first empty reply — is worthless: at
+// the instant a waiter is woken the buffer is empty, because the waking message went
+// straight to the waiter and the rest of the burst has not landed yet. So it always
+// stops immediately and returns nothing.
+//
+// Instead, keep reading until the channel has been quiet for settleMs. Every arrival
+// resets that timer, so a burst with gaps smaller than the settle window is collected
+// whole. capMs bounds the total wait so sustained traffic cannot block forever.
+//
+// read/sleep/now are injected so this is testable without two machines.
+async function drainAfterWake({ read, settleMs = 200, capMs = 5000, sleep, now = () => Date.now() }) {
+  const collected = []
+  const deadline = now() + capMs
+  let lastArrival = now()
+  const tick = Math.max(1, Math.min(25, settleMs))
+
+  while (now() - lastArrival < settleMs && now() < deadline) {
+    const msgs = await read()
+    if (msgs && msgs.length > 0) {
+      collected.push(...msgs)
+      lastArrival = now()
+    } else {
+      await sleep(tick)
+    }
+  }
+  return collected
+}
+
 function parseChannelArg(str) {
   const idx = str.indexOf(':')
   if (idx === -1) return { channel: str, secret: str }
@@ -136,6 +166,7 @@ module.exports = {
   makeMessageFilter,
   EXIT,
   isWalkieProcess,
+  drainAfterWake,
   resolveIdentity,
   setIdentity,
   isStableIdentity,

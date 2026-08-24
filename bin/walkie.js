@@ -3,7 +3,8 @@
 const { program } = require('commander')
 const { request, streamMessages } = require('../src/client')
 const { clientId, chatName, parseChannelArg, resolveIdentity, setIdentity,
-  isStableIdentity, identityWarning, configPath, makeMessageFilter, EXIT } = require('../src/cli-utils')
+  isStableIdentity, identityWarning, configPath, makeMessageFilter, EXIT,
+  drainAfterWake } = require('../src/cli-utils')
 
 program
   .name('walkie')
@@ -30,7 +31,7 @@ How it works:
   A background daemon keeps connections alive between commands.
 
 Docs: https://walkie.sh`)
-  .version('1.6.0')
+  .version('1.6.1')
 
 async function autoJoin(channelArg, cid, persist) {
   const { channel, secret } = parseChannelArg(channelArg)
@@ -810,7 +811,8 @@ program
   .option('--no-system', 'Exclude join/leave system messages')
   .option('--from <name>', 'Only messages from this sender')
   .option('--ids', 'Show message ids and reply-to references')
-  .option('--drain', 'On wake, also return everything else already buffered')
+  .option('--drain', 'On wake, keep collecting until the channel goes quiet')
+  .option('--settle <ms>', 'How long the channel must be quiet before --drain returns (default 200)')
   .option('--json', 'JSONL output, one record per line')
   .option('--utc', 'Render timestamps as UTC ISO-8601')
   .option('--peek', 'Show buffered messages without consuming them')
@@ -825,6 +827,7 @@ program
         : null
 
       let printed = false
+      let remaining = 0
       while (true) {
         const cmd = { action: 'read', channel, clientId: cid }
         if (opts.peek) cmd.peek = true
@@ -847,15 +850,25 @@ program
         }
 
         let batch = resp.messages
-        if (opts.wait && !opts.peek && opts.drain && batch.length > 0) {
-          // A --wait wake carries a single message. Pull whatever else is already
-          // buffered so the caller does not have to issue the follow-up read by
-          // hand — the dance where messages get missed.
-          for (let i = 0; i < 10; i++) {
-            const more = await request({ action: 'read', channel, clientId: cid }, 10000)
-            if (!more.ok || more.messages.length === 0) break
-            batch = batch.concat(more.messages)
-          }
+        remaining = resp.unread || 0
+        if (opts.wait && !opts.peek && opts.drain) {
+          // A --wait wake carries only the message that woke it. Wait for the channel
+          // to go quiet rather than reading once — at the moment of the wake the
+          // buffer is empty, so a single follow-up read always comes back with
+          // nothing and the rest of the burst is stranded.
+          const settleMs = Math.max(0, parseInt(opts.settle, 10) || 200)
+          const extra = await drainAfterWake({
+            settleMs,
+            capMs: Math.max(settleMs * 10, 5000),
+            sleep: (ms) => new Promise(r => setTimeout(r, ms)),
+            read: async () => {
+              const more = await request({ action: 'read', channel, clientId: cid }, 10000)
+              if (!more.ok) return []
+              remaining = more.unread || 0
+              return more.messages
+            },
+          })
+          batch = batch.concat(extra)
         }
 
         for (const msg of batch.filter(keep)) {
@@ -873,6 +886,11 @@ program
         if (!opts.json) console.log('No new messages')
         // Distinguish "waited and nothing came" from "buffer was empty right now".
         if (opts.wait && !opts.peek) process.exit(EXIT.TIMEOUT)
+      } else if (remaining > 0) {
+        // Never let a read imply it returned everything. An agent that knows it is
+        // behind will re-read; one holding a flag it believes drained the buffer
+        // will not. Goes to stderr so --json stdout stays pure JSONL.
+        console.error(`note: ${remaining} more message(s) still buffered — read again`)
       }
     } catch (e) {
       console.error(`Error: ${e.message}`)

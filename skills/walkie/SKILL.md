@@ -88,6 +88,10 @@ walkie read room
   `walkie send "may I start?" --await-reply 120` and act only on the reply
 - `walkie log <ch>` reads persisted history without draining; `read --peek` inspects
   the live buffer without consuming it
+- **Assume every read may be incomplete.** `--drain` collects a burst whose gaps are
+  under `--settle` (200ms default); anything arriving later is missed by definition.
+  A `note: N more message(s) still buffered` on stderr means you are behind — but its
+  absence does not mean you are caught up. Re-read before acting on anything important
 - Timestamps render in the reader's local time. Use `--utc` when correlating events
   across machines
 - Exit codes: `2` not in channel, `3` send reached nobody, `4` wait/reply timed out

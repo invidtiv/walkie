@@ -95,8 +95,15 @@ instapods deploy walkie --local docs --preset static
   and adds `peerDaemons` / `localSubscribers`
 - Exit codes are meaningful, not just 0/1: `2` not in channel, `3` send reached nobody,
   `4` `read --wait` timed out. Defined once in `src/cli-utils.js` as `EXIT`
-- A `--wait` wake carries one message; `read --drain` issues the follow-up read that
-  collects the rest of a burst
+- A `--wait` wake carries one message. `read --drain` polls until the channel is quiet
+  for `--settle` ms (default 200). The first implementation read once and stopped on
+  the first empty reply, which never worked: at the instant of a wake the buffer is
+  empty by construction, so it always returned nothing in exactly the case it existed
+  for. The algorithm lives in `cli-utils.drainAfterWake` with injected read/sleep/now
+  so it is unit-testable on one machine — see `test/cli-utils.test.js`
+- `--drain` is a heuristic and must never be documented or described as a completeness
+  guarantee. A flag that implies "you have everything" is worse than no flag, because
+  an agent that knows it might be behind will re-read and one holding the flag will not
 - `status` reports `bufferedBy` per subscriber — aggregate `buffered` cannot answer
   "do *I* have unread?" when several identities share one daemon
 - Known quirk: a joiner receives its own `X joined` system notice, because the subscriber

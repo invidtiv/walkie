@@ -237,3 +237,75 @@ describe('EXIT codes', () => {
     assert.equal(EXIT.TIMEOUT, 4)
   })
 })
+
+describe('drainAfterWake', () => {
+  // Virtual clock: every sleep advances time, so these run instantly and
+  // deterministically — no two machines and no wall-clock races needed.
+  function harness(script, { settleMs = 200, capMs = 5000 } = {}) {
+    let t = 0
+    const now = () => t
+    const sleep = async (ms) => { t += ms }
+    let call = 0
+    const read = async () => {
+      const batch = script[call++]
+      return batch || []
+    }
+    return { now, sleep, read, settleMs, capMs, calls: () => call }
+  }
+
+  it('does NOT stop on the first empty read', async () => {
+    // The regression this exists for: at the moment a waiter is woken the buffer is
+    // empty, because the waking message went straight to the waiter. Stopping there
+    // returns nothing and strands the rest of the burst.
+    const { drainAfterWake } = load()
+    const h = harness([[], [], [{ data: 'b' }], [{ data: 'c' }]])
+    const got = await drainAfterWake(h)
+    assert.deepEqual(got.map(m => m.data), ['b', 'c'])
+  })
+
+  it('keeps collecting while messages keep arriving', async () => {
+    const { drainAfterWake } = load()
+    const script = []
+    for (let i = 0; i < 10; i++) script.push([], [{ data: `m${i}` }])
+    const got = await drainAfterWake(harness(script))
+    assert.equal(got.length, 10)
+  })
+
+  it('returns once the channel has been quiet for settleMs', async () => {
+    const { drainAfterWake } = load()
+    // 25ms tick, 200ms settle -> gives up after 8 consecutive empty reads.
+    const h = harness([[{ data: 'x' }]], { settleMs: 200 })
+    const got = await drainAfterWake(h)
+    assert.deepEqual(got.map(m => m.data), ['x'])
+    assert.ok(h.calls() <= 12, 'must stop polling once quiet, not spin')
+  })
+
+  it('returns nothing when the channel is silent throughout', async () => {
+    const { drainAfterWake } = load()
+    assert.deepEqual(await drainAfterWake(harness([])), [])
+  })
+
+  it('honours capMs under sustained traffic', async () => {
+    const { drainAfterWake } = load()
+    // Never goes quiet: without a cap this would never return.
+    const forever = { read: async () => [{ data: 'flood' }], settleMs: 200, capMs: 1000 }
+    let t = 0
+    forever.now = () => t
+    forever.sleep = async (ms) => { t += ms }
+    // Each read returns immediately without sleeping, so advance the clock per read.
+    forever.read = async () => { t += 10; return [{ data: 'flood' }] }
+    const got = await drainAfterWake(forever)
+    assert.ok(got.length > 0)
+    assert.ok(t <= 1100, `must stop at the cap, stopped at ${t}ms`)
+  })
+
+  it('a longer settle window tolerates wider gaps', async () => {
+    const { drainAfterWake } = load()
+    // Nine empty 25ms ticks = 225ms of quiet between messages.
+    const gap = [[], [], [], [], [], [], [], [], []]
+    const script = [...gap, [{ data: 'late' }]]
+    assert.deepEqual((await drainAfterWake(harness(script, { settleMs: 200 }))).length, 0,
+      'a gap wider than settleMs ends the drain — this is a heuristic, not a guarantee')
+    assert.deepEqual((await drainAfterWake(harness(script, { settleMs: 400 }))).map(m => m.data), ['late'])
+  })
+})

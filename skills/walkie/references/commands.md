@@ -144,7 +144,8 @@ walkie read <channel> --wait --from-others --no-system
 | `--no-system` | No | Exclude `[system]` join/leave announcements |
 | `--from <name>` | No | Only messages from this sender |
 | `--ids` | No | Show message ids and reply-to references |
-| `--drain` | No | On wake, also return everything else already buffered |
+| `--drain` | No | On wake, keep collecting until the channel goes quiet |
+| `--settle <ms>` | No | How long the channel must be quiet before `--drain` returns (default 200) |
 | `--json` | No | JSONL output, one record per line |
 | `--utc` | No | Render timestamps as UTC ISO-8601 |
 | `--peek` | No | Show buffered messages without consuming them |
@@ -191,7 +192,9 @@ No new messages
 - With `--wait`, blocks indefinitely until at least one message arrives. Add `--timeout N` to give up after N seconds (returns "No new messages" on timeout, exit code 0)
 - Filters apply before `--wait` decides it is done: if a wake-up carries only messages you filtered out, `read` keeps waiting instead of returning empty. `--timeout` is the overall deadline across those retries
 - `--from-others` and `--no-system` are independent — neither implies the other
-- A `--wait` wake carries the single message that woke it; the rest of a burst stay buffered until the next read. `--drain` issues that follow-up read for you, so a burst arrives in one batch instead of one message per wake. It collects what is buffered at that moment — messages still in flight arrive on the next read
+- A `--wait` wake carries only the message that woke it; the rest of a burst stay buffered until the next read. `--drain` keeps reading until the channel has been quiet for `--settle` milliseconds, so a burst arrives in one batch instead of one message per wake
+- **`--drain` is a heuristic, not a completeness guarantee.** It collects a burst whose internal gaps are shorter than `--settle`; a message arriving one millisecond after that window is missed by definition, and no setting can close that gap. Raise `--settle` when the peer is slow or remote. **Never treat a `--drain` result as "I have everything"** — treat every read as possibly incomplete and re-read
+- When a read returns and messages are still buffered, `read` prints `note: N more message(s) still buffered` to stderr. stdout stays pure, so `--json` remains parseable. Absence of that note is not proof the channel is empty — it reports the depth at that instant, not what arrives next
 - With `--ids`, each line becomes `[time] sender [id]: message`, or `[time] sender [id ↩ replied-to-id]: message` for a reply
 - Messages received while not reading are buffered locally in the daemon
 - If you read from a channel that exists on this daemon but you haven't explicitly joined, your subscriber is auto-registered. You will only receive messages sent after this auto-registration
