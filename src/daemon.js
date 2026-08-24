@@ -34,6 +34,22 @@ class WalkieDaemon {
 
   async start() {
     fs.mkdirSync(WALKIE_DIR, { recursive: true })
+
+    // Kill any old daemon before taking over
+    try {
+      const oldPid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10)
+      if (oldPid !== process.pid && this._isRunning(oldPid)) {
+        log(`Killing old daemon pid=${oldPid}`)
+        try { process.kill(oldPid, 'SIGTERM') } catch {}
+        // Give it a moment to shut down
+        await new Promise(r => setTimeout(r, 500))
+        if (this._isRunning(oldPid)) {
+          try { process.kill(oldPid, 'SIGKILL') } catch {}
+          await new Promise(r => setTimeout(r, 200))
+        }
+      }
+    } catch {}
+
     fs.writeFileSync(PID_FILE, process.pid.toString())
 
     // Clean stale socket
@@ -235,20 +251,34 @@ class WalkieDaemon {
     }
   }
 
+  _isRunning(pid) {
+    try { process.kill(pid, 0); return true } catch { return false }
+  }
+
   // ── Channel management ────────────────────────────────────────────
 
   async _joinChannel(name, secret, persist) {
     if (this.channels.has(name)) {
-      // Upgrade to persistent if requested (never downgrade)
-      if (persist) {
-        const ch = this.channels.get(name)
-        if (!ch.persist) {
-          ch.persist = true
-          ch.knownMsgIds = store.loadIds(name)
-          log(`Channel "${name}" upgraded to persistent`)
+      const ch = this.channels.get(name)
+      // If rejoining with a different secret, leave the old channel and rejoin
+      // with the new topic. This prevents stale DHT topics when secrets change.
+      const newTopic = deriveTopic(name, secret)
+      const newTopicHex = newTopic.toString('hex')
+      if (ch.topicHex !== newTopicHex) {
+        log(`Channel "${name}" secret changed, rejoining with new topic`)
+        await this._leaveChannel(name)
+        // Fall through to join with new secret
+      } else {
+        // Same topic — upgrade to persistent if requested (never downgrade)
+        if (persist) {
+          if (!ch.persist) {
+            ch.persist = true
+            ch.knownMsgIds = store.loadIds(name)
+            log(`Channel "${name}" upgraded to persistent`)
+          }
         }
+        return
       }
-      return
     }
 
     const topic = deriveTopic(name, secret)

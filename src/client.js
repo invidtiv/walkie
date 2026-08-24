@@ -80,7 +80,17 @@ async function ensureDaemon() {
   try { fs.unlinkSync(IPC_PATH) } catch {}
   try {
     const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10)
-    if (!isProcessRunning(pid)) fs.unlinkSync(PID_FILE)
+    if (isProcessRunning(pid)) {
+      // Kill the stale daemon that we couldn't connect to (socket gone but process alive)
+      try { process.kill(pid, 'SIGTERM') } catch {}
+      await new Promise(r => setTimeout(r, 500))
+      // Force kill if still alive
+      if (isProcessRunning(pid)) {
+        try { process.kill(pid, 'SIGKILL') } catch {}
+        await new Promise(r => setTimeout(r, 200))
+      }
+    }
+    try { fs.unlinkSync(PID_FILE) } catch {}
   } catch {}
 
   // Spawn daemon
