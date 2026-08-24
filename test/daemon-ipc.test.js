@@ -215,10 +215,8 @@ describe('status bufferedBy', () => {
     assert.ok(info.bufferedBy, 'status must expose a per-subscriber breakdown')
     assert.equal(info.bufferedBy['reader-a'], 0)
     assert.ok(info.bufferedBy['reader-b'] >= 2)
-    // Note: a joiner is added to ch.subscribers before its own "X joined" notice is
-    // broadcast, and _send only excludes the literal 'system' sender — so 'writer'
-    // holds its own join announcement. Asserted so a future fix trips this test.
-    assert.equal(info.bufferedBy['writer'], 1)
+    // A joiner must not receive its own "X joined" notice.
+    assert.equal(info.bufferedBy['writer'], 0)
     // Aggregate alone could not have distinguished these.
     assert.equal(info.buffered, Object.values(info.bufferedBy).reduce((a, b) => a + b, 0))
   })
@@ -362,5 +360,32 @@ describe('send reports unread depth', () => {
     assert.equal(r.ok, true)
     assert.ok(r.unread >= 1, 'sender must see that something arrived while it was composing')
     assert.ok(r.msgId, 'send must return the id so a reply can be correlated')
+  })
+})
+
+describe('subscriber reaping', () => {
+  it('drops idle empty subscribers but never one holding messages', async () => {
+    process.env.WALKIE_SUBSCRIBER_TTL_MS = '1'
+    const dir = createTempDir()
+    const d = await startDaemon(dir)
+    try {
+      const ch = 'reap-ch'
+      await ipc(d.sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'idle' })
+      await ipc(d.sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'holder' })
+      await ipc(d.sockPath, { action: 'join', channel: ch, secret: SECRET, clientId: 'writer' })
+      await ipc(d.sockPath, { action: 'read', channel: ch, clientId: 'idle' })
+      // holder keeps an unread message, so it must survive regardless of idleness.
+      await ipc(d.sockPath, { action: 'send', channel: ch, message: 'held', clientId: 'writer', to: 'holder' })
+
+      await new Promise(r => setTimeout(r, 1200))
+      const st = await ipc(d.sockPath, { action: 'status' })
+      const info = st.channels[ch]
+      assert.ok(info.bufferedBy['holder'] >= 1, 'a subscriber holding messages is never reaped')
+      assert.equal(info.bufferedBy['idle'], undefined, 'an idle empty subscriber is reaped')
+    } finally {
+      delete process.env.WALKIE_SUBSCRIBER_TTL_MS
+      await stopDaemon(d.sockPath)
+      cleanupDir(dir)
+    }
   })
 })

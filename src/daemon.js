@@ -14,6 +14,11 @@ const IPC_PATH = IS_WINDOWS
   : path.join(WALKIE_DIR, 'daemon.sock')
 const PID_FILE = path.join(WALKIE_DIR, 'daemon.pid')
 const LOG_FILE = path.join(WALKIE_DIR, 'daemon.log')
+// How long a subscriber may sit idle and empty before being dropped.
+const SUBSCRIBER_TTL = parseInt(process.env.WALKIE_SUBSCRIBER_TTL_MS, 10) || 60 * 60 * 1000
+// Sweep at most once a minute, but more often when the TTL is shorter than that
+// (tests drive a very short TTL and need the sweep to actually run).
+const REAP_INTERVAL = Math.max(100, Math.min(60 * 1000, SUBSCRIBER_TTL))
 
 function log(...args) {
   const line = `[${new Date().toISOString()}] ${args.join(' ')}\n`
@@ -69,6 +74,8 @@ class WalkieDaemon {
     // TTL compaction on startup + periodic
     store.compactAll(TTL_MS)
     this._compactTimer = setInterval(() => store.compactAll(TTL_MS), COMPACT_INTERVAL)
+    this._reapTimer = setInterval(() => this._reapSubscribers(), REAP_INTERVAL)
+    if (this._reapTimer.unref) this._reapTimer.unref()
 
     process.on('SIGTERM', () => this.shutdown())
     process.on('SIGINT', () => this.shutdown())
@@ -109,11 +116,13 @@ class WalkieDaemon {
           const ch = this.channels.get(cmd.channel)
           const isNew = !ch.subscribers.has(id)
           if (isNew) {
-            ch.subscribers.set(id, { messages: [], waiters: [], lastReadTs: 0, lastSeen: Date.now() })
-            // Announce new joins to local subscribers and remote peers.
-            if (ch.subscribers.size > 1 || ch.peers.size > 0) {
+            // Announce BEFORE registering, so the joiner does not receive its own
+            // join notice. _send excludes only the literal 'system' sender, so a
+            // subscriber already in the map is inside its own broadcast set.
+            if (ch.subscribers.size > 0 || ch.peers.size > 0) {
               this._send(cmd.channel, `${id} joined`, 'system')
             }
+            ch.subscribers.set(id, { messages: [], waiters: [], lastReadTs: 0, lastSeen: Date.now() })
           } else {
             ch.subscribers.get(id).lastSeen = Date.now()
           }
@@ -269,6 +278,23 @@ class WalkieDaemon {
       }
     } catch (e) {
       reply({ ok: false, error: e.message })
+    }
+  }
+
+  // Drop subscribers that have gone quiet. Deliberately conservative: a subscriber
+  // is only reaped when it holds nothing (no buffered messages, no parked waiter),
+  // so reaping can never lose a message. Without this, every identity that ever
+  // touched a channel stays in the subscriber list for the daemon's lifetime.
+  _reapSubscribers() {
+    const now = Date.now()
+    for (const [name, ch] of this.channels) {
+      for (const [id, sub] of ch.subscribers) {
+        if (sub.waiters.length > 0) continue
+        if (sub.messages.length > 0) continue
+        if (now - (sub.lastSeen || 0) < SUBSCRIBER_TTL) continue
+        ch.subscribers.delete(id)
+        log(`Reaped idle subscriber "${id}" from channel "${name}"`)
+      }
     }
   }
 
@@ -555,6 +581,7 @@ class WalkieDaemon {
 
   async shutdown() {
     if (this._compactTimer) clearInterval(this._compactTimer)
+    if (this._reapTimer) clearInterval(this._reapTimer)
     try { fs.unlinkSync(IPC_PATH) } catch {}
     try { fs.unlinkSync(PID_FILE) } catch {}
     await this.swarm.destroy()
