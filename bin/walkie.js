@@ -2,7 +2,8 @@
 
 const { program } = require('commander')
 const { request, streamMessages } = require('../src/client')
-const { clientId, chatName, parseChannelArg } = require('../src/cli-utils')
+const { clientId, chatName, parseChannelArg, resolveIdentity, setIdentity,
+  isStableIdentity, identityWarning, configPath } = require('../src/cli-utils')
 
 program
   .name('walkie')
@@ -144,6 +145,19 @@ program
       process.exit(1)
     }
   })
+
+// Give this machine a stable identity the first time it connects. Without this,
+// non-interactive shells (which is how agents run) fall back to a per-session hash
+// or "default", so anything routing or filtering on sender name keys on a value
+// that changes out from under it.
+function ensureIdentity() {
+  if (isStableIdentity()) return clientId()
+  const name = require('os').hostname().split('.')[0]
+  setIdentity(name)
+  console.log(`\x1b[2mIdentity set to "${name}" (stored in ${configPath()}).`)
+  console.log(`Change it with: walkie whoami --set <name>\x1b[0m`)
+  return name
+}
 
 function detectCli() {
   const { spawnSync } = require('child_process')
@@ -560,7 +574,7 @@ program
   .action(async (channelArg, opts) => {
     try {
       const { channel, secret } = parseChannelArg(channelArg)
-      const cmd = { action: 'join', channel, secret, clientId: clientId() }
+      const cmd = { action: 'join', channel, secret, clientId: ensureIdentity() }
       if (opts.persist) cmd.persist = true
       const resp = await request(cmd)
       if (resp.ok) {
@@ -711,6 +725,37 @@ program
     } catch (e) {
       console.error(`Error: ${e.message}`)
       process.exit(1)
+    }
+  })
+
+program
+  .command('whoami')
+  .description('Show the identity this machine advertises on channels')
+  .option('--set <name>', 'Persist a stable identity to ~/.walkie/config.json')
+  .action((opts) => {
+    if (opts.set) {
+      setIdentity(opts.set)
+      console.log(`Identity set to "${opts.set}"`)
+      console.log(`Stored in ${configPath()}`)
+      if (process.env.WALKIE_ID && process.env.WALKIE_ID !== opts.set) {
+        console.log(`\x1b[33mNote: WALKIE_ID="${process.env.WALKIE_ID}" is set and overrides this.\x1b[0m`)
+      }
+      return
+    }
+    const { id, source } = resolveIdentity()
+    const label = {
+      env: 'WALKIE_ID environment variable',
+      config: configPath(),
+      session: 'terminal session (unstable — changes in a new shell)',
+      none: 'none — the daemon will attribute messages to "default"'
+    }[source]
+    console.log(`Identity: ${id || 'default'}`)
+    console.log(`Source:   ${label}`)
+    const warn = identityWarning()
+    if (warn) {
+      console.log(``)
+      console.log(`\x1b[33m${warn}\x1b[0m`)
+      console.log(`\x1b[33mFix with: walkie whoami --set <name>\x1b[0m`)
     }
   })
 
