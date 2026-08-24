@@ -156,6 +156,44 @@ function detectCli() {
 
 function runClaude(prompt, sessionId, model, extraArgs) {
   const { spawnSync } = require('child_process')
+  return _parseClaude(_runClaudeSync(prompt, sessionId, model, extraArgs))
+}
+
+/** Async version of runClaude — does not block the event loop. */
+function runClaudeAsync(prompt, sessionId, model, extraArgs) {
+  const { spawn } = require('child_process')
+  const args = ['-p', prompt, '--output-format', 'json']
+  if (sessionId) args.push('--resume', sessionId)
+  if (model) args.push('--model', model)
+  if (extraArgs) args.push(...extraArgs)
+
+  return new Promise((resolve, reject) => {
+    let stdout = ''
+    let stderr = ''
+    const child = spawn('claude', args, {
+      timeout: 300000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    })
+
+    child.stdout.on('data', d => { stdout += d.toString() })
+    child.stderr.on('data', d => { stderr += d.toString() })
+
+    child.on('error', (err) => reject(err))
+    child.on('close', (code) => {
+      // claude -p often exits non-zero while still producing valid output
+      // on stdout or stderr. Use whichever has content.
+      const output = stdout.trim() || stderr.trim()
+      if (!output) {
+        return reject(new Error(stderr || `claude exited with code ${code}`))
+      }
+      resolve(_parseClaude({ stdout: output, stderr: '' }))
+    })
+  })
+}
+
+function _runClaudeSync(prompt, sessionId, model, extraArgs) {
+  const { spawnSync } = require('child_process')
   const args = ['-p', prompt, '--output-format', 'json']
   if (sessionId) args.push('--resume', sessionId)
   if (model) args.push('--model', model)
@@ -169,11 +207,19 @@ function runClaude(prompt, sessionId, model, extraArgs) {
   })
 
   if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(result.stderr || 'claude exited with code ' + result.status)
+  // claude -p often exits non-zero while still producing valid output on stdout.
+  // Only throw if there's no stdout at all.
+  if (result.status !== 0 && !(result.stdout || '').trim()) {
+    throw new Error(result.stderr || 'claude exited with code ' + result.status)
+  }
 
-  const stdout = (result.stdout || '').trim()
-  const out = { text: stdout, sessionId: null }
-  const lines = stdout.split('\n').filter(l => l.trim())
+  return { stdout: result.stdout || '', stderr: result.stderr || '' }
+}
+
+function _parseClaude({ stdout }) {
+  const trimmed = stdout.trim()
+  const out = { text: trimmed, sessionId: null }
+  const lines = trimmed.split('\n').filter(l => l.trim())
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
       const obj = JSON.parse(lines[i])
@@ -254,6 +300,7 @@ program
   .option('--prompt <text>', 'System prompt for the agent')
   .option('--model <model>', 'Model to use')
   .option('--name <name>', 'Agent display name')
+  .option('--concurrency <n>', 'Max parallel tasks (default: 1)', '1')
   .option('--agent-args <args>', 'Extra CLI arguments passed to claude/codex (e.g. "--dangerously-skip-permissions")')
   .action(async (channelArg, opts) => {
     const cli = opts.cli || detectCli()
@@ -272,7 +319,10 @@ program
     const secret = opts.secret || parsed.secret
     const cid = agentName
     const extraArgs = opts.agentArgs ? opts.agentArgs.split(/\s+/) : null
+    const maxConcurrency = Math.max(1, parseInt(opts.concurrency, 10) || 1)
+    const useAsync = cli === 'claude' && maxConcurrency > 1
     const askFn = cli === 'claude' ? runClaude : runCodex
+    const askFnAsync = cli === 'claude' ? runClaudeAsync : null
 
     try {
       const resp = await request({ action: 'join', channel, secret, clientId: cid })
@@ -282,28 +332,37 @@ program
       }
 
       console.log(`\x1b[1m--- walkie agent: #${channel} ---\x1b[0m`)
-      console.log(`\x1b[2mAgent "${agentName}" powered by ${cli}. Listening for messages.\x1b[0m`)
+      console.log(`\x1b[2mAgent "${agentName}" powered by ${cli}. Listening for messages.${maxConcurrency > 1 ? ` (concurrency: ${maxConcurrency})` : ''}\x1b[0m`)
       console.log(`\x1b[2mOthers can talk to this agent with: walkie chat ${channel}\x1b[0m`)
       console.log(`\x1b[2mCtrl+C to stop.\x1b[0m`)
       console.log()
 
       // Daemon broadcasts "X joined" automatically via system message
 
-      // Message queue — process one at a time
+      // Message queue — process up to maxConcurrency at a time
       const queue = []
-      let processing = false
-      let sessionId = null
+      let activeCount = 0
 
       // Loop prevention: track consecutive exchanges with same sender
       let lastSender = null
       let consecutiveCount = 0
       const MAX_CONSECUTIVE = 10
 
-      async function processQueue() {
-        if (processing || queue.length === 0) return
-        processing = true
+      // Per-task session tracking (concurrency > 1 uses independent sessions)
+      let sharedSessionId = null
 
-        const msg = queue.shift()
+      async function processQueue() {
+        while (activeCount < maxConcurrency && queue.length > 0) {
+          const msg = queue.shift()
+          activeCount++
+          processOne(msg).finally(() => {
+            activeCount--
+            processQueue()
+          })
+        }
+      }
+
+      async function processOne(msg) {
         const time = new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         console.log(`\x1b[2m${time}\x1b[0m \x1b[1m${msg.from}\x1b[0m: ${msg.data}`)
 
@@ -312,8 +371,15 @@ program
             ? `${opts.prompt}\n\nMessage from ${msg.from}: ${msg.data}`
             : `You are "${agentName}", an AI agent on a walkie P2P channel called "#${channel}". Someone is talking to you. Be helpful and concise.\n\nMessage from ${msg.from}: ${msg.data}`
 
-          const out = askFn(prompt, sessionId, opts.model, extraArgs)
-          sessionId = out.sessionId || sessionId
+          // Use async for concurrent processing, sync for single (preserves session)
+          const sessionId = maxConcurrency > 1 ? null : sharedSessionId
+          let out
+          if (useAsync && askFnAsync) {
+            out = await askFnAsync(prompt, sessionId, opts.model, extraArgs)
+          } else {
+            out = askFn(prompt, sessionId, opts.model, extraArgs)
+          }
+          if (maxConcurrency === 1) sharedSessionId = out.sessionId || sharedSessionId
 
           if (out.text && out.text.trim()) {
             const respTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -332,9 +398,6 @@ program
         } catch (e) {
           console.error(`\x1b[31m${cli} error: ${e.message}\x1b[0m`)
         }
-
-        processing = false
-        processQueue()
       }
 
       // Stream incoming messages
@@ -673,6 +736,73 @@ program
         console.error(`Error: ${resp.error}`)
         process.exit(1)
       }
+    } catch (e) {
+      console.error(`Error: ${e.message}`)
+      process.exit(1)
+    }
+  })
+
+program
+  .command('slack <channel>')
+  .description('Bridge a walkie channel to a Slack channel')
+  .option('--token <token>', 'Slack bot token (or SLACK_BOT_TOKEN env var)')
+  .option('--app-token <token>', 'Slack app-level token (or SLACK_APP_TOKEN env var)')
+  .option('--slack-channel <id>', 'Slack channel ID or name')
+  .option('--secret <secret>', 'Custom secret (default: channel name)')
+  .action(async (channelArg, opts) => {
+    const { startSlackBridge } = require('../src/slack')
+    const parsed = parseChannelArg(channelArg)
+
+    const botToken = opts.token || process.env.SLACK_BOT_TOKEN
+    const appToken = opts.appToken || process.env.SLACK_APP_TOKEN
+
+    if (!botToken) {
+      console.error('Error: Slack bot token required.')
+      console.error('  Use --token or set SLACK_BOT_TOKEN env var')
+      console.error('')
+      console.error('Setup: https://api.slack.com/apps → Create New App')
+      console.error('  Bot Token Scopes: chat:write, channels:history, channels:read, users:read')
+      console.error('  Enable Socket Mode, subscribe to message.channels event')
+      process.exit(1)
+    }
+    if (!appToken) {
+      console.error('Error: Slack app-level token required.')
+      console.error('  Use --app-token or set SLACK_APP_TOKEN env var')
+      console.error('')
+      console.error('Setup: https://api.slack.com/apps → Basic Information → App-Level Tokens')
+      console.error('  Create token with connections:write scope')
+      process.exit(1)
+    }
+    if (!opts.slackChannel) {
+      console.error('Error: --slack-channel required (channel ID or name)')
+      process.exit(1)
+    }
+
+    try {
+      const bridge = await startSlackBridge({
+        botToken,
+        appToken,
+        channel: parsed.channel,
+        secret: opts.secret || parsed.secret,
+        slackChannel: opts.slackChannel
+      })
+
+      console.log(`\x1b[1m--- walkie slack bridge ---\x1b[0m`)
+      console.log(`\x1b[2mwalkie #${parsed.channel} \u2194 Slack ${bridge.slackChannelName}\x1b[0m`)
+      console.log(`\x1b[2mBridge ID: ${bridge.bridgeId}\x1b[0m`)
+      console.log(`\x1b[2mCtrl+C to stop.\x1b[0m`)
+      console.log()
+
+      let exiting = false
+      const cleanup = async () => {
+        if (exiting) return
+        exiting = true
+        await bridge.close()
+        console.log('\n\x1b[2mSlack bridge stopped.\x1b[0m')
+        process.exit(0)
+      }
+      process.on('SIGINT', cleanup)
+      process.on('SIGTERM', cleanup)
     } catch (e) {
       console.error(`Error: ${e.message}`)
       process.exit(1)
