@@ -41,7 +41,7 @@ await walkie.send('mychannel:secret', 'hello', { id: 'sender' })
 
 ## Testing
 
-`npm test` — 53 automated tests using `node:test` (zero extra deps). Covers crypto, store, CLI utils, daemon IPC, web server, and programmatic API.
+`npm test` — 99 automated tests using `node:test` (zero extra deps). Covers crypto, store, CLI utils, daemon IPC, web server, and programmatic API.
 
 `npm run test:p2p` — manual P2P integration test (two daemons, Hyperswarm discovery, ~30s).
 
@@ -62,8 +62,13 @@ checks the tag matches `package.json`, runs the suite, then publishes.
 
 ```bash
 # bump version in package.json AND bin/walkie.js, commit, then:
-git tag v1.6.3 && git push origin v1.6.3
+git tag v1.6.5 && git push origin v1.6.5
 ```
+
+A published version sits in npm's automated review as **Validating** for a few
+minutes and is genuinely 404 until it clears — that is not a failed publish. The
+local npm cache also serves a stale packument right after, so `npm i pkg@newversion`
+can claim "no matching version" while `npm pack` succeeds; use `--prefer-online`.
 
 Requires a Trusted Publisher configured once at npmjs.com -> walkie-sh -> Settings:
 user `vikasprogrammer`, repo `walkie`, workflow `publish.yml`, action `npm publish`.
@@ -138,6 +143,20 @@ instapods deploy walkie --local docs --preset static
 - Tests derive a random secret per run (`test/helpers.js` `SECRET`). Topics are
   SHA-256(channel+secret) on the public DHT, so fixed secrets let stray daemons join
   test channels and skew assertions
+- `claude -p --output-format json` has TWO shapes in the wild: current CLIs return a
+  single-line JSON **array** of events (reply on the `type: "result"` element), older
+  ones a single result object. `cli-utils.parseClaudeOutput` handles both plus
+  newline-delimited stream-json, and posts **nothing** when the payload parses as JSON
+  but carries no reply — dumping an event stream into a channel is worse than silence.
+  It lives in cli-utils, not inline in bin, so it is unit-testable; it was refactored
+  twice while broken because nothing could reach it (issue #13, diagnosed in PR #14)
+- Do NOT merge the semgrep-driven "harden child_process" change to `execForMessage`
+  (PR #18). Replacing `execSync(cmd)` with `execFileSync('/bin/sh', ['-c', '$WALKIE_CMD'])`
+  breaks `watch --exec`: quotes stop being interpreted and `$WALKIE_MSG` no longer
+  expands, which is the flag's entire purpose. The command comes from the user's own
+  CLI flag, so there is no untrusted input to sanitize. Its second half (using execFile
+  for the `--open` URL) is directionally right but breaks Windows, where `start` is a
+  shell builtin and not an executable
 - walkie carries messages, not authority. Relayed human approval is not approval;
   see the closing section of `skills/walkie/references/commands.md`
 - `walkie web` uses read-wait loops per channel (no daemon changes needed for real-time)
