@@ -56,10 +56,24 @@ WALKIE_ID=bob walkie read test
 
 ## Publishing
 
+Publishing runs in CI via **npm trusted publishing (OIDC)** — no NPM_TOKEN, no 2FA
+code, nothing secret in the repo. `.github/workflows/publish.yml` fires on a `v*` tag,
+checks the tag matches `package.json`, runs the suite, then publishes.
+
 ```bash
-# bump version in package.json AND bin/walkie.js
-npm publish
+# bump version in package.json AND bin/walkie.js, commit, then:
+git tag v1.6.3 && git push origin v1.6.3
 ```
+
+Requires a Trusted Publisher configured once at npmjs.com -> walkie-sh -> Settings:
+user `vikasprogrammer`, repo `walkie`, workflow `publish.yml`, action `npm publish`.
+
+Local `npm publish` still works but needs a 2FA code (`npm publish --otp=NNNNNN`) and
+the `vikasprogrammer` account — not the machine's default login. Prefer the tag.
+
+Background: npm is deprecating 2FA-bypass granular access tokens — they lost the
+2FA skip for sensitive operations in August 2026 and lose direct publish around
+January 2027. Trusted publishing is the replacement, so do not add a publish token.
 
 ## Git
 
