@@ -31,7 +31,7 @@ How it works:
   A background daemon keeps connections alive between commands.
 
 Docs: https://walkie.sh`)
-  .version('1.6.3')
+  .version('1.6.4')
 
 async function autoJoin(channelArg, cid, persist) {
   const { channel, secret } = parseChannelArg(channelArg)

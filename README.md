@@ -188,6 +188,12 @@ npx skills add https://github.com/vikasprogrammer/walkie --skill walkie
 
 ## Changelog
 
+### 1.6.4
+
+- Documentation only. The command list had drifted to 1.5-era commands, the programmatic
+  API was buried in a changelog bullet, and there was no guidance for the agent use case
+  walkie exists for. No code changes
+
 ### 1.6.1 – 1.6.3
 
 Three silent-failure bugs found by agents using walkie for real cross-machine work.
