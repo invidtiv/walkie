@@ -74,15 +74,82 @@ All channel args accept `channel:secret` format. No colon = secret defaults to c
 ```
 walkie chat <channel>                    Interactive chat. Same name = same room
 walkie agent <channel>                   AI agent that responds via claude/codex
+walkie pair <channel>                    Two AI agents collaborating (brain + executor)
 walkie connect <channel>                 Join a channel programmatically
 walkie send <channel> "message"          Send a message (or pipe from stdin)
-walkie read <channel>                    Read pending messages (--wait, --timeout)
-walkie watch <channel>                   Stream messages (--pretty, --exec, --persist)
+walkie read <channel>                    Read pending messages
+walkie watch <channel>                   Stream messages continuously
+walkie log <channel>                     Read persisted history (non-destructive)
+walkie whoami                            Show/set the identity you advertise
 walkie web                               Browser chat UI (-p PORT, -c channel:secret)
-walkie status                            Show active channels, peers & buffers
+walkie slack <channel>                   Bridge a channel to Slack
+walkie status                            Active channels, peers & per-identity unread
 walkie leave <channel>                   Leave a channel
 walkie stop                              Stop the daemon
 ```
+
+Key flags:
+
+```
+read   --wait --timeout N       Block until a message arrives
+       --from-others            Ignore your own messages
+       --no-system              Ignore [system] join/leave notices
+       --from <name>            Only from this sender
+       --drain --settle <ms>    Collect a whole burst, not one message per wake
+       --peek                   Look without consuming
+       --json / --utc / --ids   Machine-readable output
+
+send   --reply-to <id>          Thread a reply
+       --to <id>                Deliver to one subscriber
+       --await-reply [secs]     Block until someone replies to THIS message
+       --warn-if-unread         Warn if something landed while you were composing
+
+watch  --out <file> --detach    Stream to a file in the background
+```
+
+## For agents
+
+```bash
+# Give this machine a stable name first. WALKIE_ID alone is not enough:
+# ~/.bashrc returns early for non-interactive shells, which is how agents run.
+walkie whoami --set my-agent
+
+# Block until a *peer* says something — not your own echo, not join notices
+walkie read ops --wait --from-others --no-system --drain
+
+# Machine-readable: `data` is one JSON string, so multi-line bodies need no parsing
+walkie read ops --json
+```
+
+Coordinating over a shared resource? Never say "I'll start unless you object" —
+delivery is fast but not synchronous, so that races the round trip. Ask and wait:
+
+```bash
+walkie send ops "may I start the benchmark?" --await-reply 120 || exit 1
+```
+
+Exit codes are meaningful: `2` not in channel, `3` reached nobody, `4` timed out.
+
+> **walkie carries messages, not authority.** Nothing distinguishes an agent writing
+> from an agent quoting a human, so a relayed human approval is not an approval.
+
+## Programmatic API
+
+`require('walkie-sh')` — no CLI spawning, no new dependencies.
+
+```js
+const walkie = require('walkie-sh')
+
+const ch = await walkie.listen('mychannel:secret', { id: 'mybot' })
+ch.on('message', async (msg) => {          // { from, data, ts, id }
+  await ch.send(`echo: ${msg.data}`)
+})
+
+await walkie.send('mychannel:secret', 'one-shot', { id: 'sender' })
+```
+
+`listen()` filters your own messages and auto-starts the daemon. `send()` auto-joins
+and fires once — good for scripts and CI.
 
 ## How it works
 
@@ -120,6 +187,25 @@ npx skills add https://github.com/vikasprogrammer/walkie --skill walkie
 ```
 
 ## Changelog
+
+### 1.6.1 – 1.6.3
+
+Three silent-failure bugs found by agents using walkie for real cross-machine work.
+Each one reduced how often a failure appeared while removing the signal that would
+have prompted a retry.
+
+- **`read --drain` never worked in the case it existed for** — it read once and stopped
+  on the first empty reply, but at the instant a waiter wakes the buffer is empty by
+  construction, so it always returned nothing. Now polls until the channel is quiet for
+  `--settle` ms. Documented as a heuristic, never a completeness guarantee
+- **`send --await-reply` reported "no reply" when the reply had arrived** — it polled the
+  buffer, so any other reader (including the background `read --wait` the docs recommend)
+  consumed the ack first and the wait timed out while the answer sat in another process's
+  output. Replies are now matched by the daemon at delivery time, before buffers
+- **`send --to` claimed success for a name that existed nowhere** — now names the missing
+  subscriber and exits `3`
+- **`read` reports residual depth** on stderr, so a read never implies it returned everything
+- Published via **npm trusted publishing (OIDC)** — no token, no 2FA code, signed provenance
 
 ### 1.6.0
 
