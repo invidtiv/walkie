@@ -153,6 +153,59 @@ async function drainAfterWake({ read, settleMs = 200, capMs = 5000, sleep, now =
   return collected
 }
 
+// Extract the reply text from `claude -p --output-format json`.
+//
+// The current CLI returns a single-line JSON ARRAY of events
+// ([system/init, ...assistant, result]) and the reply lives on the element with
+// type "result". Older CLIs returned one result object, and stream-json emits
+// newline-delimited objects. Parsing line-by-line for a top-level `.result`
+// matches none of the array shape, so `text` kept its raw-stdout default and the
+// agent posted the entire JSON event stream into the channel.
+//
+// Never fall back to raw stdout when the output parsed as JSON: dumping an event
+// stream into a channel is worse than saying nothing. Plain-text output (not JSON
+// at all) is still passed through, since that is legitimate CLI output.
+function parseClaudeOutput(stdout) {
+  const trimmed = (stdout || '').trim()
+  const out = { text: trimmed, sessionId: null }
+  if (!trimmed) return out
+
+  let resultText = null
+  let assistantText = null
+
+  const apply = (obj) => {
+    if (!obj || typeof obj !== 'object') return
+    if (obj.session_id) out.sessionId = obj.session_id
+    if (typeof obj.result === 'string') resultText = obj.result
+    if (obj.type === 'assistant' && obj.message && Array.isArray(obj.message.content)) {
+      const text = obj.message.content
+        .filter(c => c && c.type === 'text' && typeof c.text === 'string')
+        .map(c => c.text).join('').trim()
+      if (text) assistantText = text
+    }
+  }
+
+  let whole
+  let wasJson = false
+  try { whole = JSON.parse(trimmed); wasJson = true } catch {}
+
+  if (Array.isArray(whole)) whole.forEach(apply)
+  else if (whole && typeof whole === 'object') apply(whole)
+  else {
+    for (const line of trimmed.split('\n')) {
+      const t = line.trim()
+      if (!t) continue
+      try { apply(JSON.parse(t)); wasJson = true } catch {}
+    }
+  }
+
+  if (resultText !== null) out.text = resultText
+  else if (assistantText !== null) out.text = assistantText
+  else if (wasJson) out.text = ''   // parsed as JSON but carried no reply — post nothing
+
+  return out
+}
+
 function parseChannelArg(str) {
   const idx = str.indexOf(':')
   if (idx === -1) return { channel: str, secret: str }
@@ -167,6 +220,7 @@ module.exports = {
   EXIT,
   isWalkieProcess,
   drainAfterWake,
+  parseClaudeOutput,
   resolveIdentity,
   setIdentity,
   isStableIdentity,

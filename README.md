@@ -188,6 +188,16 @@ npx skills add https://github.com/vikasprogrammer/walkie --skill walkie
 
 ## Changelog
 
+### 1.6.5
+
+- **`walkie agent --cli claude` posted the raw JSON event stream** instead of the reply.
+  `claude -p --output-format json` returns a single-line JSON *array* of events on current
+  CLIs (the reply is the `type: "result"` element), while older ones return a single result
+  object. Walkie parsed line-by-line for a top-level `.result`, matched neither, and fell
+  back to dumping stdout into the channel. All three shapes are handled now, and a payload
+  that parses as JSON but carries no reply posts nothing rather than leaking the stream.
+  Reported in #13, diagnosed in #14 by @rossmeyerza
+
 ### 1.6.4
 
 - Documentation only. The command list had drifted to 1.5-era commands, the programmatic

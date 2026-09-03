@@ -309,3 +309,75 @@ describe('drainAfterWake', () => {
     assert.deepEqual((await drainAfterWake(harness(script, { settleMs: 400 }))).map(m => m.data), ['late'])
   })
 })
+
+describe('parseClaudeOutput', () => {
+  it('extracts the reply from the current array-of-events shape', () => {
+    const { parseClaudeOutput } = load()
+    const stdout = JSON.stringify([
+      { type: 'system', subtype: 'init', session_id: 'sess-1', tools: ['Bash'] },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'PONG' }] } },
+      { type: 'result', subtype: 'success', result: 'PONG', session_id: 'sess-1' },
+    ])
+    const r = parseClaudeOutput(stdout)
+    assert.equal(r.text, 'PONG')
+    assert.equal(r.sessionId, 'sess-1')
+  })
+
+  it('never posts a raw JSON event stream into the channel', () => {
+    // The actual bug: the array shape fell through to the raw-stdout default and
+    // the agent relayed the whole event stream as its reply.
+    const { parseClaudeOutput } = load()
+    const stdout = JSON.stringify([{ type: 'system', subtype: 'init', session_id: 'x' }])
+    const r = parseClaudeOutput(stdout)
+    assert.ok(!r.text.includes('"type"'), 'must not leak JSON into the reply')
+    assert.equal(r.text, '')
+  })
+
+  it('supports the legacy single result object', () => {
+    const { parseClaudeOutput } = load()
+    const r = parseClaudeOutput(JSON.stringify({ result: 'legacy reply', session_id: 'sess-2' }))
+    assert.equal(r.text, 'legacy reply')
+    assert.equal(r.sessionId, 'sess-2')
+  })
+
+  it('supports newline-delimited stream-json', () => {
+    const { parseClaudeOutput } = load()
+    const stdout = [
+      JSON.stringify({ type: 'system', session_id: 'sess-3' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } }),
+      JSON.stringify({ type: 'result', result: 'stream reply' }),
+    ].join('\n')
+    const r = parseClaudeOutput(stdout)
+    assert.equal(r.text, 'stream reply')
+    assert.equal(r.sessionId, 'sess-3')
+  })
+
+  it('falls back to assistant text when no result event is present', () => {
+    const { parseClaudeOutput } = load()
+    const stdout = JSON.stringify([
+      { type: 'system', session_id: 'sess-4' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'only assistant' }] } },
+    ])
+    assert.equal(parseClaudeOutput(stdout).text, 'only assistant')
+  })
+
+  it('passes plain non-JSON output through unchanged', () => {
+    const { parseClaudeOutput } = load()
+    assert.equal(parseClaudeOutput('just plain text').text, 'just plain text')
+  })
+
+  it('handles empty output', () => {
+    const { parseClaudeOutput } = load()
+    assert.equal(parseClaudeOutput('').text, '')
+    assert.equal(parseClaudeOutput(undefined).text, '')
+  })
+
+  it('takes the last result when several appear', () => {
+    const { parseClaudeOutput } = load()
+    const stdout = JSON.stringify([
+      { type: 'result', result: 'first' },
+      { type: 'result', result: 'final' },
+    ])
+    assert.equal(parseClaudeOutput(stdout).text, 'final')
+  })
+})

@@ -4,7 +4,7 @@ const { program } = require('commander')
 const { request, streamMessages } = require('../src/client')
 const { clientId, chatName, parseChannelArg, resolveIdentity, setIdentity,
   isStableIdentity, identityWarning, configPath, makeMessageFilter, EXIT,
-  drainAfterWake } = require('../src/cli-utils')
+  drainAfterWake, parseClaudeOutput } = require('../src/cli-utils')
 
 program
   .name('walkie')
@@ -31,7 +31,7 @@ How it works:
   A background daemon keeps connections alive between commands.
 
 Docs: https://walkie.sh`)
-  .version('1.6.4')
+  .version('1.6.5')
 
 async function autoJoin(channelArg, cid, persist) {
   const { channel, secret } = parseChannelArg(channelArg)
@@ -264,17 +264,7 @@ function _runClaudeSync(prompt, sessionId, model, extraArgs) {
 }
 
 function _parseClaude({ stdout }) {
-  const trimmed = stdout.trim()
-  const out = { text: trimmed, sessionId: null }
-  const lines = trimmed.split('\n').filter(l => l.trim())
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const obj = JSON.parse(lines[i])
-      if (obj.session_id) out.sessionId = obj.session_id
-      if (obj.result !== undefined) { out.text = obj.result; break }
-    } catch {}
-  }
-  return out
+  return parseClaudeOutput(stdout)
 }
 
 function runCodex(prompt, sessionId, model, extraArgs) {
