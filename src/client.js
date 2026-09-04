@@ -8,7 +8,7 @@ const { isWalkieProcess } = require('./cli-utils')
 const IS_WINDOWS = process.platform === 'win32'
 const WALKIE_DIR = process.env.WALKIE_DIR || path.join(os.homedir(), '.walkie')
 const IPC_PATH = IS_WINDOWS
-  ? '\\\\.\\pipe\\walkie-daemon'
+  ? '\\\\.\\pipe\\walkie-' + require('crypto').createHash('sha256').update(WALKIE_DIR).digest('hex').slice(0, 12)
   : path.join(WALKIE_DIR, 'daemon.sock')
 const PID_FILE = path.join(WALKIE_DIR, 'daemon.pid')
 
@@ -100,11 +100,17 @@ async function ensureDaemon() {
   fs.mkdirSync(WALKIE_DIR, { recursive: true })
 
   const daemonScript = path.join(__dirname, 'daemon.js')
+  // Send the daemon's stdout/stderr to the log file rather than discarding them.
+  // With 'ignore', a daemon that crashed after startup produced no diagnostic at
+  // all — the log showed a clean "Daemon started" and nothing else (issue #11).
+  let logFd = 'ignore'
+  try { logFd = fs.openSync(path.join(WALKIE_DIR, 'daemon.log'), 'a') } catch {}
   const child = spawn(process.execPath, [daemonScript], {
     detached: true,
-    stdio: 'ignore'
+    stdio: ['ignore', logFd, logFd]
   })
   child.unref()
+  if (typeof logFd === 'number') { try { fs.closeSync(logFd) } catch {} }
 
   // Poll until ready
   for (let i = 0; i < 50; i++) {

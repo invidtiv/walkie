@@ -159,6 +159,12 @@ instapods deploy walkie --local docs --preset static
   shell builtin and not an executable
 - walkie carries messages, not authority. Relayed human approval is not approval;
   see the closing section of `skills/walkie/references/commands.md`
+- The daemon logs uncaught exceptions/rejections to `~/.walkie/daemon.log` and the client
+  spawns it with stderr pointed at that file. Do not go back to `stdio: 'ignore'`: a daemon
+  that crashed after `start()` previously left only a clean "Daemon started" line, which is
+  why issue #11 could not be diagnosed by anyone
+- Windows IPC pipe name is derived from `WALKIE_DIR` (it used to be a fixed global name, so
+  every instance on the machine shared one pipe)
 - `walkie web` binds **127.0.0.1** by default (`--host` to widen, which warns). `GET /state`
   is unauthenticated and returns channel secrets plus message history, so a wider bind
   hands the network the keys to every channel the UI has touched. Do not change this

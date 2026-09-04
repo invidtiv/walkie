@@ -447,3 +447,32 @@ describe('awaitReply', () => {
     assert.equal(r.timedOut, true)
   })
 })
+
+describe('daemon crash diagnostics', () => {
+  // Issue #11: the daemon logged "Daemon started" and then vanished, with nothing
+  // in the log. The spawn discarded stderr and nothing handled uncaught errors, so
+  // a post-startup crash was unreportable. Whatever the platform cause, the failure
+  // must at least leave a trace.
+  it('writes an uncaught post-startup exception to daemon.log', async () => {
+    const { spawn } = require('child_process')
+    const fs = require('fs')
+    const path = require('path')
+    const dir = createTempDir()
+    try {
+      await new Promise((resolve) => {
+        const child = spawn(process.execPath, ['-e',
+          `require(${JSON.stringify(path.resolve(__dirname, '..', 'src', 'daemon.js'))});` +
+          `setTimeout(() => { throw new Error('simulated post-start crash') }, 3000)`
+        ], { env: { ...process.env, WALKIE_DIR: dir }, stdio: 'ignore' })
+        child.on('exit', resolve)
+      })
+
+      const log = fs.readFileSync(path.join(dir, 'daemon.log'), 'utf8')
+      assert.match(log, /Daemon started/, 'daemon should reach startup')
+      assert.match(log, /FATAL uncaughtException/, 'a post-startup crash must be logged')
+      assert.match(log, /simulated post-start crash/, 'the log must carry the actual error')
+    } finally {
+      cleanupDir(dir)
+    }
+  })
+})

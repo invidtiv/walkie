@@ -9,8 +9,11 @@ const { isWalkieProcess } = require('./cli-utils')
 
 const IS_WINDOWS = process.platform === 'win32'
 const WALKIE_DIR = process.env.WALKIE_DIR || path.join(os.homedir(), '.walkie')
+// On POSIX the socket lives inside WALKIE_DIR, so instances isolate naturally.
+// A fixed Windows pipe name ignored WALKIE_DIR entirely, so every instance on the
+// machine — including isolated test runs — fought over one pipe. Derive it instead.
 const IPC_PATH = IS_WINDOWS
-  ? '\\\\.\\pipe\\walkie-daemon'
+  ? '\\\\.\\pipe\\walkie-' + require('crypto').createHash('sha256').update(WALKIE_DIR).digest('hex').slice(0, 12)
   : path.join(WALKIE_DIR, 'daemon.sock')
 const PID_FILE = path.join(WALKIE_DIR, 'daemon.pid')
 const LOG_FILE = path.join(WALKIE_DIR, 'daemon.log')
@@ -25,6 +28,18 @@ function log(...args) {
   const line = `[${new Date().toISOString()}] ${args.join(' ')}\n`
   try { fs.appendFileSync(LOG_FILE, line) } catch {}
 }
+
+// A daemon that died after start() left nothing behind: the spawn discarded stderr
+// and nothing handled uncaught errors, so "it starts then vanishes" was unreportable.
+// See issue #11.
+process.on('uncaughtException', (err) => {
+  log(`FATAL uncaughtException: ${err && err.stack || err}`)
+  process.exit(1)
+})
+process.on('unhandledRejection', (reason) => {
+  log(`FATAL unhandledRejection: ${reason && reason.stack || reason}`)
+  process.exit(1)
+})
 
 const TTL_MS = (parseInt(process.env.WALKIE_TTL, 10) || 86400) * 1000
 const COMPACT_INTERVAL = 15 * 60 * 1000
@@ -71,6 +86,10 @@ class WalkieDaemon {
 
     // P2P connections
     this.swarm.on('connection', (conn, info) => this._onPeer(conn, info))
+    // An unhandled 'error' on an EventEmitter throws and kills the daemon. The swarm
+    // can error for reasons that are not fatal to IPC (UDP bind refused, DHT
+    // unreachable), so log and keep serving local clients.
+    this.swarm.on('error', (err) => log(`swarm error: ${err && err.message || err}`))
 
     // TTL compaction on startup + periodic
     store.compactAll(TTL_MS)

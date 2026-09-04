@@ -188,6 +188,17 @@ npx skills add https://github.com/vikasprogrammer/walkie --skill walkie
 
 ## Changelog
 
+### 1.6.7
+
+- **A daemon that crashed after startup left no trace.** The spawn discarded stderr and
+  nothing handled uncaught errors, so the log showed a clean `Daemon started` and then
+  silence — which is exactly what made #11 unreportable. Uncaught exceptions, rejections
+  and daemon stderr now land in `~/.walkie/daemon.log`, and a swarm error no longer takes
+  the process down
+- **Windows: the IPC pipe name ignored `WALKIE_DIR`.** Every instance on a machine shared
+  one hardcoded pipe, so isolated runs collided. It is now derived from `WALKIE_DIR`, matching
+  how the POSIX socket already behaved
+
 ### 1.6.6
 
 - **Security: `walkie web` now binds loopback by default.** It previously listened on
