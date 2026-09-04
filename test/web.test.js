@@ -184,3 +184,64 @@ describe('WebSocket', () => {
     ws.terminate()
   })
 })
+
+describe('web server bind address', () => {
+  // /state serves channel secrets and message history with no authentication, and a
+  // channel secret is the entire access control for that channel. Binding every
+  // interface therefore hands anyone on the network a way to join and read every
+  // channel the UI has touched. Loopback must stay the default.
+  it('binds loopback by default, not every interface', async () => {
+    const os = require('os')
+    const net = require('net')
+    const dir = createTempDir()
+    process.env.WALKIE_DIR = dir
+    const d = await startDaemon(dir)
+    const { startWebServer } = require('../src/web')
+    const srv = await startWebServer({ port: 3211 })
+    try {
+      assert.equal(srv.host, '127.0.0.1')
+
+      // Reachable on loopback...
+      await new Promise((resolve, reject) => {
+        const s = net.connect(srv.port, '127.0.0.1')
+        s.on('connect', () => { s.destroy(); resolve() })
+        s.on('error', reject)
+      })
+
+      // ...and NOT on a routable interface of this host.
+      const external = Object.values(os.networkInterfaces()).flat()
+        .find(i => i && i.family === 'IPv4' && !i.internal)
+      if (external) {
+        const refused = await new Promise((resolve) => {
+          const s = net.connect(srv.port, external.address)
+          s.setTimeout(2000)
+          s.on('connect', () => { s.destroy(); resolve(false) })
+          s.on('error', () => resolve(true))
+          s.on('timeout', () => { s.destroy(); resolve(true) })
+        })
+        assert.equal(refused, true, `web server must not accept connections on ${external.address}`)
+      }
+    } finally {
+      srv.close()
+      await stopDaemon(d.sockPath)
+      delete process.env.WALKIE_DIR
+      cleanupDir(dir)
+    }
+  })
+
+  it('can opt in to a wider bind explicitly', async () => {
+    const dir = createTempDir()
+    process.env.WALKIE_DIR = dir
+    const d = await startDaemon(dir)
+    const { startWebServer } = require('../src/web')
+    const srv = await startWebServer({ port: 3212, host: '0.0.0.0' })
+    try {
+      assert.equal(srv.host, '0.0.0.0')
+    } finally {
+      srv.close()
+      await stopDaemon(d.sockPath)
+      delete process.env.WALKIE_DIR
+      cleanupDir(dir)
+    }
+  })
+})

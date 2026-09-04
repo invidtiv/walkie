@@ -31,7 +31,7 @@ How it works:
   A background daemon keeps connections alive between commands.
 
 Docs: https://walkie.sh`)
-  .version('1.6.5')
+  .version('1.6.6')
 
 async function autoJoin(channelArg, cid, persist) {
   const { channel, secret } = parseChannelArg(channelArg)
@@ -1110,10 +1110,20 @@ program
   .option('-p, --port <port>', 'HTTP port', '3000')
   .option('-c, --channel <channels...>', 'Auto-join channels (format: channel:secret)')
   .option('--no-open', 'Do not open browser automatically')
+  .option('--host <addr>', 'Interface to bind (default: 127.0.0.1)', '127.0.0.1')
   .action(async (opts) => {
     try {
       const { startWebServer } = require('../src/web')
-      const { port } = await startWebServer({ port: parseInt(opts.port, 10) })
+      const { port, host } = await startWebServer({
+        port: parseInt(opts.port, 10),
+        host: opts.host,
+      })
+      const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+      if (!loopback) {
+        // /state serves channel secrets and message history unauthenticated, and a
+        // secret is the whole access control for a channel.
+        console.error(`\x1b[33mWarning: bound to ${host}, not loopback. Anyone who can reach this port can read your channel secrets and history via /state.\x1b[0m`)
+      }
       let url = `http://localhost:${port}`
       if (opts.channel && opts.channel.length > 0) {
         url += '?' + opts.channel.map(c => 'c=' + encodeURIComponent(c)).join('&')

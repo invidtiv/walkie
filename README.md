@@ -188,6 +188,14 @@ npx skills add https://github.com/vikasprogrammer/walkie --skill walkie
 
 ## Changelog
 
+### 1.6.6
+
+- **Security: `walkie web` now binds loopback by default.** It previously listened on
+  every interface, and `GET /state` serves channel secrets and message history with no
+  authentication — so anyone who could reach the port could read the secrets for every
+  channel the UI had touched, and a secret is the entire access control for a channel.
+  Use `--host 0.0.0.0` to opt back in; it warns when you do
+
 ### 1.6.5
 
 - **`walkie agent --cli claude` posted the raw JSON event stream** instead of the reply.

@@ -248,7 +248,7 @@ class WebClient {
   }
 }
 
-function tryListen(server, port, maxAttempts = 10) {
+function tryListen(server, port, maxAttempts = 10, host) {
   return new Promise((resolve, reject) => {
     let attempts = 0
     const try_ = () => {
@@ -268,13 +268,17 @@ function tryListen(server, port, maxAttempts = 10) {
       }
       server.once('error', onError)
       server.once('listening', onListen)
-      server.listen(port)
+      server.listen(port, host)
     }
     try_()
   })
 }
 
-async function startWebServer({ port = 3000 } = {}) {
+// Bind loopback by default. The /state endpoint serves channel secrets and message
+// history with no authentication, and a walkie secret is the whole access control for
+// a channel — so listening on every interface hands the LAN a way to join and read
+// every channel this UI has touched. Opting out is deliberate and warned about.
+async function startWebServer({ port = 3000, host = '127.0.0.1' } = {}) {
   await ensureDaemon()
 
   const server = http.createServer((req, res) => {
@@ -305,7 +309,7 @@ async function startWebServer({ port = 3000 } = {}) {
     }
   })
 
-  const actualPort = await tryListen(server, port)
+  const actualPort = await tryListen(server, port, 10, host)
 
   const wss = new WebSocket.Server({ server, path: '/ws' })
 
@@ -315,7 +319,7 @@ async function startWebServer({ port = 3000 } = {}) {
     ws.on('close', () => client.cleanup())
   })
 
-  return { port: actualPort, close: () => server.close() }
+  return { port: actualPort, host, close: () => server.close() }
 }
 
 module.exports = { startWebServer }

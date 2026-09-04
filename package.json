@@ -1,6 +1,6 @@
 {
   "name": "walkie-sh",
-  "version": "1.6.5",
+  "version": "1.6.6",
   "description": "P2P communication CLI for AI agents. No server. No setup. Just talk.",
   "homepage": "https://walkie.sh",
   "repository": {
