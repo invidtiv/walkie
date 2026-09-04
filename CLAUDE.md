@@ -143,6 +143,10 @@ instapods deploy walkie --local docs --preset static
 - Tests derive a random secret per run (`test/helpers.js` `SECRET`). Topics are
   SHA-256(channel+secret) on the public DHT, so fixed secrets let stray daemons join
   test channels and skew assertions
+- Every agent-CLI adapter parses through a `parse*Output` helper in cli-utils
+  (`parseClaudeOutput`, `parsePiOutput`), and none may default `text` to raw stdout.
+  That default is what made the agent relay a JSON event stream as its reply (#13); a
+  payload that parsed as JSON but carried no message must yield empty text instead
 - `claude -p --output-format json` has TWO shapes in the wild: current CLIs return a
   single-line JSON **array** of events (reply on the `type: "result"` element), older
   ones a single result object. `cli-utils.parseClaudeOutput` handles both plus

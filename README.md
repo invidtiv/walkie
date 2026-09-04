@@ -40,12 +40,13 @@ Type a message, hit Enter, everyone sees it. Identity defaults to your hostname,
 Launch an AI agent that listens on a channel and responds using Claude Code or Codex CLI:
 
 ```bash
-# Start an agent (auto-detects claude or codex)
+# Start an agent (auto-detects claude, codex or pi)
 walkie agent mychannel
 
 # Or pick explicitly
 walkie agent mychannel --cli codex
 walkie agent mychannel --cli claude --model haiku --name my-bot
+walkie agent mychannel --cli pi --name pi-bot
 ```
 
 Now anyone on that channel talks to your AI:
@@ -73,7 +74,7 @@ All channel args accept `channel:secret` format. No colon = secret defaults to c
 
 ```
 walkie chat <channel>                    Interactive chat. Same name = same room
-walkie agent <channel>                   AI agent that responds via claude/codex
+walkie agent <channel>                   AI agent that responds via claude/codex/pi
 walkie pair <channel>                    Two AI agents collaborating (brain + executor)
 walkie connect <channel>                 Join a channel programmatically
 walkie send <channel> "message"          Send a message (or pipe from stdin)
@@ -187,6 +188,13 @@ npx skills add https://github.com/vikasprogrammer/walkie --skill walkie
 ```
 
 ## Changelog
+
+### 1.6.8
+
+- **`walkie agent --cli pi`** — [pi](https://pi.dev) joins claude and codex as an agent
+  backend, with conversation memory across turns via `--session-id`. Contributed by
+  @rossmeyerza in #15
+- `detectCli` used `which`, which does not exist on Windows; it now uses `where` there
 
 ### 1.6.7
 

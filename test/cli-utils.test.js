@@ -381,3 +381,66 @@ describe('parseClaudeOutput', () => {
     assert.equal(parseClaudeOutput(stdout).text, 'final')
   })
 })
+
+describe('parsePiOutput', () => {
+  it('extracts session id and the assistant reply from NDJSON events', () => {
+    const { parsePiOutput } = load()
+    const stdout = [
+      JSON.stringify({ type: 'session', id: 'pi-sess-1' }),
+      JSON.stringify({ type: 'message_update', message: { role: 'assistant', content: [{ type: 'text', text: 'partial' }] } }),
+      JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'PI ADAPTER WORKS' }] } }),
+    ].join('\n')
+    const r = parsePiOutput(stdout)
+    assert.equal(r.text, 'PI ADAPTER WORKS')
+    assert.equal(r.sessionId, 'pi-sess-1')
+  })
+
+  it('joins multiple text parts of one message', () => {
+    const { parsePiOutput } = load()
+    const stdout = JSON.stringify({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] },
+    })
+    assert.equal(parsePiOutput(stdout).text, 'ab')
+  })
+
+  it('ignores non-assistant messages', () => {
+    const { parsePiOutput } = load()
+    const stdout = [
+      JSON.stringify({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'the prompt' }] } }),
+      JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'the reply' }] } }),
+    ].join('\n')
+    assert.equal(parsePiOutput(stdout).text, 'the reply')
+  })
+
+  it('never leaks a raw event stream into the channel', () => {
+    // Same failure the claude adapter shipped with (#13): a raw-stdout default
+    // relays the event stream as if it were the model's reply.
+    const { parsePiOutput } = load()
+    const stdout = JSON.stringify({ type: 'session', id: 'pi-sess-2' })
+    const r = parsePiOutput(stdout)
+    assert.equal(r.text, '')
+    assert.equal(r.sessionId, 'pi-sess-2')
+    assert.ok(!r.text.includes('"type"'))
+  })
+
+  it('passes plain non-JSON output through', () => {
+    const { parsePiOutput } = load()
+    assert.equal(parsePiOutput('plain reply').text, 'plain reply')
+  })
+
+  it('handles empty output', () => {
+    const { parsePiOutput } = load()
+    assert.equal(parsePiOutput('').text, '')
+    assert.equal(parsePiOutput(undefined).text, '')
+  })
+
+  it('tolerates interleaved non-JSON lines', () => {
+    const { parsePiOutput } = load()
+    const stdout = [
+      'warning: something on stdout',
+      JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'still works' }] } }),
+    ].join('\n')
+    assert.equal(parsePiOutput(stdout).text, 'still works')
+  })
+})

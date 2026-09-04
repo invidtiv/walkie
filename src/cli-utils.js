@@ -206,6 +206,45 @@ function parseClaudeOutput(stdout) {
   return out
 }
 
+// Extract the reply text and session id from `pi -p --mode json`, which emits
+// newline-delimited events: a `session` event carrying the id, then assistant
+// messages whose text parts accumulate into the reply.
+//
+// Same discipline as parseClaudeOutput and for the same reason (issue #13): when the
+// output parsed as JSON but carried no assistant text, return empty rather than
+// falling back to raw stdout. A raw-stdout default is how an adapter ends up relaying
+// an event stream into the channel as if it were the model's reply.
+function parsePiOutput(stdout) {
+  const trimmed = (stdout || '').trim()
+  const out = { text: trimmed, sessionId: null }
+  if (!trimmed) return out
+
+  let assistantText = null
+  let wasJson = false
+
+  for (const line of trimmed.split('\n')) {
+    const t = line.trim()
+    if (!t) continue
+    let obj
+    try { obj = JSON.parse(t) } catch { continue }
+    wasJson = true
+    if (!obj || typeof obj !== 'object') continue
+    if (obj.type === 'session' && obj.id) out.sessionId = obj.id
+    const msg = obj.message
+    if (msg && msg.role === 'assistant' && Array.isArray(msg.content)) {
+      const text = msg.content
+        .filter(c => c && c.type === 'text' && typeof c.text === 'string')
+        .map(c => c.text).join('')
+      if (text) assistantText = text
+    }
+  }
+
+  if (assistantText !== null) out.text = assistantText
+  else if (wasJson) out.text = ''
+
+  return out
+}
+
 function parseChannelArg(str) {
   const idx = str.indexOf(':')
   if (idx === -1) return { channel: str, secret: str }
@@ -221,6 +260,7 @@ module.exports = {
   isWalkieProcess,
   drainAfterWake,
   parseClaudeOutput,
+  parsePiOutput,
   resolveIdentity,
   setIdentity,
   isStableIdentity,

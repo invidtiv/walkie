@@ -4,7 +4,7 @@ const { program } = require('commander')
 const { request, streamMessages } = require('../src/client')
 const { clientId, chatName, parseChannelArg, resolveIdentity, setIdentity,
   isStableIdentity, identityWarning, configPath, makeMessageFilter, EXIT,
-  drainAfterWake, parseClaudeOutput } = require('../src/cli-utils')
+  drainAfterWake, parseClaudeOutput, parsePiOutput } = require('../src/cli-utils')
 
 program
   .name('walkie')
@@ -12,7 +12,7 @@ program
 
 Getting started:
   $ walkie chat mychannel                    Interactive chat (same name = same channel)
-  $ walkie agent mychannel                   AI agent that responds via claude/codex
+  $ walkie agent mychannel                   AI agent that responds via claude/codex/pi
   $ walkie agent mychannel --cli codex       Use a specific AI CLI
 
 Programmatic (for agents/scripts):
@@ -31,7 +31,7 @@ How it works:
   A background daemon keeps connections alive between commands.
 
 Docs: https://walkie.sh`)
-  .version('1.6.7')
+  .version('1.6.8')
 
 async function autoJoin(channelArg, cid, persist) {
   const { channel, secret } = parseChannelArg(channelArg)
@@ -192,8 +192,10 @@ function toJsonRecord(msg, channel, me) {
 
 function detectCli() {
   const { spawnSync } = require('child_process')
-  for (const cmd of ['claude', 'codex']) {
-    const r = spawnSync('which', [cmd], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  // `which` does not exist on Windows; `where` is the equivalent.
+  const lookup = process.platform === 'win32' ? 'where' : 'which'
+  for (const cmd of ['claude', 'codex', 'pi']) {
+    const r = spawnSync(lookup, [cmd], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
     if (r.status === 0) return cmd
   }
   return null
@@ -329,11 +331,35 @@ function runCodex(prompt, sessionId, model, extraArgs) {
   return { text, sessionId: threadId }
 }
 
+function runPi(prompt, sessionId, model, extraArgs) {
+  const { spawnSync } = require('child_process')
+  const args = ['-p', prompt, '--mode', 'json']
+  // --session-id reuses (or creates) a session, giving the agent memory across turns
+  if (sessionId) args.push('--session-id', sessionId)
+  if (model) args.push('--model', model)
+  if (extraArgs) args.push(...extraArgs)
+
+  const result = spawnSync('pi', args, {
+    timeout: 300000,
+    maxBuffer: 10 * 1024 * 1024,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  if (result.error) throw result.error
+  if (result.status !== 0 && !(result.stdout || '').trim()) {
+    throw new Error(result.stderr || 'pi exited with code ' + result.status)
+  }
+
+  const parsed = parsePiOutput(result.stdout)
+  return { text: parsed.text, sessionId: parsed.sessionId || sessionId || null }
+}
+
 program
   .command('agent <channel>')
-  .description('AI agent that listens and responds via claude or codex')
+  .description('AI agent that listens and responds via claude, codex or pi')
   .option('--secret <secret>', 'Custom secret (default: channel name)')
-  .option('--cli <cli>', 'CLI to use: claude or codex (auto-detected if omitted)')
+  .option('--cli <cli>', 'CLI to use: claude, codex or pi (auto-detected if omitted)')
   .option('--prompt <text>', 'System prompt for the agent')
   .option('--model <model>', 'Model to use')
   .option('--name <name>', 'Agent display name')
@@ -342,11 +368,11 @@ program
   .action(async (channelArg, opts) => {
     const cli = opts.cli || detectCli()
     if (!cli) {
-      console.error('Error: neither "claude" nor "codex" CLI found. Install one first.')
+      console.error('Error: no supported CLI ("claude", "codex" or "pi") found. Install one first.')
       process.exit(1)
     }
-    if (cli !== 'claude' && cli !== 'codex') {
-      console.error(`Error: unsupported CLI "${cli}". Use "claude" or "codex".`)
+    if (cli !== 'claude' && cli !== 'codex' && cli !== 'pi') {
+      console.error(`Error: unsupported CLI "${cli}". Use "claude", "codex" or "pi".`)
       process.exit(1)
     }
 
@@ -364,7 +390,7 @@ program
       // that does not reflect what happens.
       console.error(`\x1b[33mWarning: --concurrency is only supported for the claude CLI; ${cli} runs one task at a time.\x1b[0m`)
     }
-    const askFn = cli === 'claude' ? runClaude : runCodex
+    const askFn = cli === 'claude' ? runClaude : cli === 'codex' ? runCodex : runPi
     const askFnAsync = cli === 'claude' ? runClaudeAsync : null
 
     try {
